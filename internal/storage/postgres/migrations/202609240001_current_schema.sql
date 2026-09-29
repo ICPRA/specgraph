@@ -2206,6 +2206,27 @@ CREATE TABLE public.node_merge_sources (
 );
 CREATE INDEX node_merge_sources_history ON public.node_merge_sources(project_slug,source_slug,merge_id DESC);
 CREATE INDEX node_merges_target_history ON public.node_merges(project_slug,target_slug,id DESC);
+
+-- Project bindings record the human-confirmed native project target of each
+-- SpecGraph project. Revoked rows are retained history; at most one binding
+-- per project is active at a time.
+--
+
+CREATE TABLE public.project_bindings (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    project_slug text NOT NULL REFERENCES public.projects(slug),
+    environment_id text NOT NULL CHECK (btrim(environment_id) <> ''),
+    native_project_id text NOT NULL CHECK (btrim(native_project_id) <> ''),
+    workspace_root text,
+    reason text NOT NULL CHECK (char_length(reason) BETWEEN 1 AND 4000),
+    actor text NOT NULL CHECK (btrim(actor) <> ''),
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    revoked_at timestamp with time zone
+);
+
+CREATE UNIQUE INDEX project_bindings_active ON public.project_bindings USING btree (project_slug) WHERE (revoked_at IS NULL);
+CREATE INDEX project_bindings_history ON public.project_bindings USING btree (project_slug, id DESC);
+
 -- Restore the migration connection's search path for Goose's version write.
 RESET search_path;
 -- +goose StatementEnd

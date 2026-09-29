@@ -227,6 +227,26 @@ func ExecuteLocalWorkbenchKnowledge(ctx context.Context, root *postgres.Store, p
 		}
 		environmentID, nativeProjectID = req.EnvironmentID, req.NativeProjectID
 		read = func(s *postgres.Store) (any, error) { return s.ReadNodeMarkHistory(ctx, req.TaskSlug, beforeID) }
+	case "project-binding-history":
+		var req struct {
+			EnvironmentID   string `json:"environment_id"`
+			NativeProjectID string `json:"native_project_id"`
+			Cursor          string `json:"cursor"`
+		}
+		if decodeMailRequest(body, &req) != nil {
+			return nil, invalid
+		}
+		var beforeID int64
+		if req.Cursor != "" {
+			var err error
+			beforeID, err = strconv.ParseInt(req.Cursor, 10, 64)
+			if err != nil || beforeID < 1 || strconv.FormatInt(beforeID, 10) != req.Cursor {
+				return nil, invalid
+			}
+		}
+		environmentID, nativeProjectID = req.EnvironmentID, req.NativeProjectID
+		// The closure runs after project resolution below; project is final by then.
+		read = func(s *postgres.Store) (any, error) { return s.ProjectBindingHistory(ctx, project, beforeID) }
 	case "node-deliveries":
 		var req struct {
 			EnvironmentID   string `json:"environment_id"`

@@ -209,6 +209,7 @@ func ReadWorkbenchCurrentView(ctx context.Context, store workbenchReadBackend, p
 		"readySpecSlugs":  readySlugs,
 		"decisions":       decisionOut,
 		"graph":           map[string]any{"nodes": nodes, "edges": edges},
+		"projectBinding":  metadata.ProjectBinding,
 		"runs":            metadata.Runs,
 		"deliveries":      metadata.Deliveries,
 		"evidence":        metadata.Evidence,

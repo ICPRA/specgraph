@@ -59,6 +59,12 @@ func (s *Store) PrepareRunForOperator(ctx context.Context, taskSlug, workspace, 
 		if lockErr := s.lockDependencyState(txCtx); lockErr != nil {
 			return lockErr
 		}
+		if target != nil {
+			// Once a binding exists, every dispatch target must match it.
+			if bindingErr := s.checkDispatchTargetBinding(txCtx, target); bindingErr != nil {
+				return bindingErr
+			}
+		}
 		var priorActor, priorTask, priorWorkspace string
 		var sameTarget bool
 		rowErr := s.queryRow(txCtx, `SELECT actor,task_slug,workspace,run_id,dispatch_target IS NOT DISTINCT FROM $3::jsonb FROM run_preparations WHERE project_slug=$1 AND idempotency_key=$2`, s.project, key, target).

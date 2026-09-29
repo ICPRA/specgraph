@@ -261,6 +261,7 @@ type WorkbenchDeliveryHook struct {
 
 // WorkbenchMetadata contains project-scoped execution, review and judgment metadata.
 type WorkbenchMetadata struct {
+	ProjectBinding  *ProjectBinding          `json:"projectBinding"`
 	NodeOwners      []WorkbenchNodeOwner     `json:"nodeOwners"`
 	Runs            []WorkbenchRun           `json:"runs"`
 	Deliveries      []WorkbenchDelivery      `json:"deliveries"`
@@ -276,6 +277,11 @@ type WorkbenchMetadata struct {
 // per task. Related rows must belong to the same project at every join.
 func (s *Store) ReadWorkbenchMetadata(ctx context.Context) (*WorkbenchMetadata, error) {
 	out := &WorkbenchMetadata{}
+	binding, err := s.ActiveProjectBinding(ctx, s.project)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: workbench project binding: %w", err)
+	}
+	out.ProjectBinding = binding
 	ownerRows, err := s.query(ctx, `SELECT s.slug AS task_slug,s.human_owner_user_id,o.id AS pending_operation_id
  FROM specs s LEFT JOIN node_ownership_operations o ON o.project_slug=s.project_slug AND o.task_slug=s.slug AND o.status='pending'
  WHERE s.project_slug=$1 AND s.role='work' ORDER BY s.slug`, s.project)

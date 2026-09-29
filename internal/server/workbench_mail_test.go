@@ -104,6 +104,7 @@ func TestWorkbenchMailAPI(t *testing.T) {
 		t.Fatal("cannot connect to maintenance database")
 	}
 	t.Cleanup(func() { _ = admin.Close(ctx) })
+	const database = "specgraph_workbench_mail_api_check"
 	var exists bool
 	if err := admin.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)`, database).Scan(&exists); err != nil {
 		t.Fatal(err)

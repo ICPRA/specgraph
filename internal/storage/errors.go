@@ -183,6 +183,15 @@ var ErrRunBindingConflict = errors.New("run binding identity conflict")
 // ErrInvalidRunBinding is returned when an explicit run identity is invalid.
 var ErrInvalidRunBinding = errors.New("invalid run binding identity")
 
+// ErrInvalidProjectBinding rejects a malformed or blank project binding request.
+var ErrInvalidProjectBinding = errors.New("invalid project binding request")
+
+// ErrProjectBindingNotFound denotes the absence of an active binding for the project.
+var ErrProjectBindingNotFound = errors.New("active project binding not found")
+
+// ErrProjectBindingMismatch rejects a dispatch target outside the project's active binding.
+var ErrProjectBindingMismatch = errors.New("dispatch target does not match the active project binding")
+
 // --- Lifecycle errors ---
 
 var (

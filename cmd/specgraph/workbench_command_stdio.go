@@ -64,7 +64,7 @@ func init() {
 			return runWorkbenchCommandStdio(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(),
 				func(ctx context.Context, req workbenchCommandRequest, procedure string) (json.RawMessage, error) {
 					procedures := []string{procedure}
-					if req.Operation == "conversation-runs" || req.Operation == "graph-current" || req.Operation == "knowledge-search" || req.Operation == "knowledge-record" || req.Operation == "review-status" || req.Operation == "review-delivery-source" || req.Operation == "review-request-source" || req.Operation == "test-results" || req.Operation == "node-deliveries" || req.Operation == "dependency-state" || req.Operation == "node-mark-history" || req.Operation == "program-loop-read" || req.Operation == "program-loop-history" {
+					if req.Operation == "conversation-runs" || req.Operation == "graph-current" || req.Operation == "knowledge-search" || req.Operation == "knowledge-record" || req.Operation == "review-status" || req.Operation == "review-delivery-source" || req.Operation == "review-request-source" || req.Operation == "test-results" || req.Operation == "node-deliveries" || req.Operation == "dependency-state" || req.Operation == "node-mark-history" || req.Operation == "project-binding-history" || req.Operation == "program-loop-read" || req.Operation == "program-loop-history" {
 						procedures = workbenchKnowledgeProcedures(req.Operation, req.Body)
 					}
 					identity, commandErr := resolveWorkbenchOperator(ctx, store, req.Credential, cfg.Auth.Policies.ExtraDirs, procedures[0], procedures[1:]...)
@@ -275,7 +275,7 @@ func init() {
 						}
 						return json.Marshal(result)
 					}
-					if req.Operation == "conversation-runs" || req.Operation == "graph-current" || req.Operation == "knowledge-search" || req.Operation == "knowledge-record" || req.Operation == "review-status" || req.Operation == "review-delivery-source" || req.Operation == "review-request-source" || req.Operation == "test-results" || req.Operation == "node-deliveries" || req.Operation == "dependency-state" || req.Operation == "node-mark-history" || req.Operation == "program-loop-read" || req.Operation == "program-loop-history" {
+					if req.Operation == "conversation-runs" || req.Operation == "graph-current" || req.Operation == "knowledge-search" || req.Operation == "knowledge-record" || req.Operation == "review-status" || req.Operation == "review-delivery-source" || req.Operation == "review-request-source" || req.Operation == "test-results" || req.Operation == "node-deliveries" || req.Operation == "dependency-state" || req.Operation == "node-mark-history" || req.Operation == "project-binding-history" || req.Operation == "program-loop-read" || req.Operation == "program-loop-history" {
 						result, err := server.ExecuteLocalWorkbenchKnowledge(auth.WithIdentity(ctx, identity), store, req.Project, req.Operation, bytes.NewReader(req.Body))
 						if err != nil {
 							return nil, err
@@ -337,7 +337,7 @@ func workbenchKnowledgeProcedures(operation string, body json.RawMessage) []stri
 	if operation == "graph-current" {
 		return []string{specgraphv1connect.GraphServiceGetFullGraphProcedure}
 	}
-	if operation == "review-status" || operation == "review-delivery-source" || operation == "review-request-source" || operation == "test-results" || operation == "node-deliveries" || operation == "dependency-state" || operation == "node-mark-history" {
+	if operation == "review-status" || operation == "review-delivery-source" || operation == "review-request-source" || operation == "test-results" || operation == "node-deliveries" || operation == "dependency-state" || operation == "node-mark-history" || operation == "project-binding-history" {
 		return []string{specgraphv1connect.SpecServiceGetSpecProcedure}
 	}
 	if operation == "knowledge-search" {
@@ -468,7 +468,9 @@ func runWorkbenchCommandStdio(ctx context.Context, input io.Reader, output io.Wr
 			procedure = specgraphv1connect.LifecycleServiceTransitionAbandonProcedure
 		case "set-node-mark":
 			procedure = auth.WorkbenchSetNodeMarkProcedure
-		case "conversation-runs", "graph-current", "knowledge-search", "knowledge-record", "review-status", "review-delivery-source", "review-request-source", "test-results", "node-deliveries", "dependency-state", "node-mark-history", "program-loop-read", "program-loop-history":
+		case "bind-project", "unbind-project":
+			procedure = auth.WorkbenchBindProjectProcedure
+		case "conversation-runs", "graph-current", "knowledge-search", "knowledge-record", "review-status", "review-delivery-source", "review-request-source", "test-results", "node-deliveries", "dependency-state", "node-mark-history", "project-binding-history", "program-loop-read", "program-loop-history":
 			if procedures := workbenchKnowledgeProcedures(req.Operation, req.Body); len(procedures) != 0 {
 				procedure = procedures[0]
 			}
@@ -509,7 +511,7 @@ func runWorkbenchCommandStdio(ctx context.Context, input io.Reader, output io.Wr
 		}
 		mail := strings.HasPrefix(req.Operation, "mail-")
 		agentReview := req.Operation == "node-handoff-summary-own" || req.Operation == "candidate-satisfaction-own" || req.Operation == "record-own-node-event" || req.Operation == "candidate-next-own" || req.Operation == "review-assign" || req.Operation == "review-submit" || req.Operation == "test-result-submit" || req.Operation == "run-complete-self" || req.Operation == "delivery-self-context" || req.Operation == "delivery-submit-self" || strings.HasPrefix(req.Operation, "pm-")
-		knowledge := req.Operation == "node-owner-read" || req.Operation == "node-owner-history" || req.Operation == "candidate-satisfaction-history" || req.Operation == "node-events" || req.Operation == "report-judgment-history" || req.Operation == "candidate-loop-read" || req.Operation == "report-flow-read" || req.Operation == "report-join-read" || req.Operation == "conversation-runs" || req.Operation == "graph-current" || req.Operation == "knowledge-search" || req.Operation == "knowledge-record" || req.Operation == "review-status" || req.Operation == "review-delivery-source" || req.Operation == "review-request-source" || req.Operation == "test-results" || req.Operation == "node-deliveries" || req.Operation == "dependency-state" || req.Operation == "node-mark-history" || req.Operation == "program-loop-read" || req.Operation == "program-loop-history" || req.Operation == "preview-node-merge" || req.Operation == "node-merge-history" || req.Operation == "node-merge-receipt"
+		knowledge := req.Operation == "node-owner-read" || req.Operation == "node-owner-history" || req.Operation == "candidate-satisfaction-history" || req.Operation == "node-events" || req.Operation == "report-judgment-history" || req.Operation == "candidate-loop-read" || req.Operation == "report-flow-read" || req.Operation == "report-join-read" || req.Operation == "conversation-runs" || req.Operation == "graph-current" || req.Operation == "knowledge-search" || req.Operation == "knowledge-record" || req.Operation == "review-status" || req.Operation == "review-delivery-source" || req.Operation == "review-request-source" || req.Operation == "test-results" || req.Operation == "node-deliveries" || req.Operation == "dependency-state" || req.Operation == "node-mark-history" || req.Operation == "project-binding-history" || req.Operation == "program-loop-read" || req.Operation == "program-loop-history" || req.Operation == "preview-node-merge" || req.Operation == "node-merge-history" || req.Operation == "node-merge-receipt"
 		hookHost := strings.HasPrefix(req.Operation, "host-") || req.Operation == "delivery-hook-context"
 		automaticMailProject := (mail && req.Operation != "mail-grant" && req.Operation != "mail-bind") || agentReview || hookHost || req.Operation == "summary-status" || req.Operation == "summary-history"
 		if procedure == auth.WorkbenchReadProgramRunProcedure || procedure == auth.WorkbenchExecuteProgramRunProcedure {
@@ -559,6 +561,12 @@ func workbenchCommandError(err error) *workbenchReadError {
 	switch {
 	case errors.Is(err, storage.ErrInvalidNodeOwnership):
 		return &workbenchReadError{Code: "invalid_argument", Message: err.Error()}
+	case errors.Is(err, storage.ErrInvalidProjectBinding):
+		return &workbenchReadError{Code: "invalid_argument", Message: err.Error()}
+	case errors.Is(err, storage.ErrProjectBindingNotFound):
+		return &workbenchReadError{Code: "not_found", Message: err.Error()}
+	case errors.Is(err, storage.ErrProjectBindingMismatch):
+		return &workbenchReadError{Code: "project_binding_mismatch", Message: err.Error()}
 	case errors.Is(err, storage.ErrNodeOwnershipConflict):
 		return &workbenchReadError{Code: "conflict", Message: err.Error()}
 	case errors.Is(err, storage.ErrNodeOwnershipNotFound):

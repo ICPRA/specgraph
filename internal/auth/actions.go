@@ -30,6 +30,7 @@ const (
 	WorkbenchSubdivisionProcedure                 = "/workbench.v1.WorkbenchService/Subdivision"
 	WorkbenchChangePreviewProcedure               = "/workbench.v1.WorkbenchService/ChangePreview"
 	WorkbenchSetNodeMarkProcedure                 = "/workbench.v1.WorkbenchService/SetNodeMark"
+	WorkbenchBindProjectProcedure                 = "/workbench.v1.WorkbenchService/BindProject"
 	WorkbenchRecordNodeEventProcedure             = "/workbench.v1.WorkbenchService/RecordNodeEvent"
 	WorkbenchRecordOwnNodeEventProcedure          = "/workbench.v1.WorkbenchService/RecordOwnNodeEvent"
 	WorkbenchRecordOwnCandidateJudgmentProcedure  = "/workbench.v1.WorkbenchService/RecordOwnCandidateJudgment"
@@ -82,6 +83,7 @@ var procedureActions = map[string]string{
 	WorkbenchSubdivisionProcedure:                 "workbench.manage",
 	WorkbenchChangePreviewProcedure:               "workbench.manage",
 	WorkbenchSetNodeMarkProcedure:                 "workbench.manage",
+	WorkbenchBindProjectProcedure:                 "workbench.manage",
 	WorkbenchRecordNodeEventProcedure:             "workbench.manage",
 	WorkbenchRecordOwnNodeEventProcedure:          "node-event.write",
 	WorkbenchRecordOwnCandidateJudgmentProcedure:  "candidate-judgment.write",

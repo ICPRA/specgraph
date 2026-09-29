@@ -131,6 +131,45 @@ func ExecuteWorkbenchCommand(ctx context.Context, root *postgres.Store, operatio
 		return encoded, nil
 	case "set-node-mark":
 		return setWorkbenchNodeMark(ctx, store, slug, actor, body, false)
+	case "bind-project":
+		var req struct {
+			EnvironmentID   string `json:"environmentId"`
+			NativeProjectID string `json:"nativeProjectId"`
+			WorkspaceRoot   string `json:"workspaceRoot"`
+			Reason          string `json:"reason"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if len(body) > 32<<10 || validateSlug(slug) != nil || decoder.Decode(&req) != nil || decoder.Decode(new(any)) != io.EOF ||
+			strings.TrimSpace(req.EnvironmentID) == "" || strings.TrimSpace(req.NativeProjectID) == "" ||
+			strings.TrimSpace(req.Reason) == "" || utf8.RuneCountInString(req.Reason) > 4000 || len(req.WorkspaceRoot) > 4096 {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("valid environmentId, nativeProjectId and reason of 1-4000 characters required"))
+		}
+		binding, err := store.BindProject(ctx, project, req.EnvironmentID, req.NativeProjectID, req.WorkspaceRoot, req.Reason, actor)
+		if err != nil {
+			return nil, fmt.Errorf("workbench command: %w", err)
+		}
+		encoded, encodeErr := json.Marshal(binding)
+		if encodeErr != nil {
+			return encoded, fmt.Errorf("workbench command: encode response: %w", encodeErr)
+		}
+		return encoded, nil
+	case "unbind-project":
+		var req struct{}
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if len(body) > 32<<10 || validateSlug(slug) != nil || decoder.Decode(&req) != nil || decoder.Decode(new(any)) != io.EOF || strings.TrimSpace(actor) == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("unbind-project requires an empty object body"))
+		}
+		binding, err := store.RevokeProjectBinding(ctx, project)
+		if err != nil {
+			return nil, fmt.Errorf("workbench command: %w", err)
+		}
+		encoded, encodeErr := json.Marshal(binding)
+		if encodeErr != nil {
+			return encoded, fmt.Errorf("workbench command: encode response: %w", encodeErr)
+		}
+		return encoded, nil
 	case "subdivide-node":
 		var req storage.SubdivideRequest
 		decoder := json.NewDecoder(bytes.NewReader(body))
