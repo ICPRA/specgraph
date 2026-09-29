@@ -127,8 +127,9 @@ func TestProjectBindingsPostgres(t *testing.T) {
 	if history.Items[0].ID != rebound.ID || history.Items[1].ID != bound.ID {
 		t.Fatal("history must be newest first")
 	}
-	if history.Items[1].RevokedAt == nil || !history.Items[1].RevokedAt.Equal(reboundAt) {
-		t.Fatalf("rebind must revoke the previous binding: %+v", history.Items[1])
+	if history.Items[1].RevokedAt == nil || !history.Items[1].RevokedAt.Equal(reboundAt) ||
+		history.Items[1].RevokeReason != nil || history.Items[1].RevokedBy != nil {
+		t.Fatalf("rebind must revoke the previous binding without a manual revocation record: %+v", history.Items[1])
 	}
 	if active, err := store.ActiveProjectBinding(txCtx, "alpha"); err != nil || active == nil || active.ID != rebound.ID {
 		t.Fatalf("rebind must replace the active binding: %v %v", active, err)
@@ -160,14 +161,17 @@ func TestProjectBindingsPostgres(t *testing.T) {
 		t.Fatalf("cursor paging: %+v %v", older, err)
 	}
 
-	// Revoke ends the active binding without deleting history.
+	// Revoke ends the active binding without deleting history; the reason and
+	// actor are recorded on the revoked row.
 	revokedAt := reboundAt.Add(time.Hour)
 	store.nowFunc = func() time.Time { return revokedAt }
-	revoked, err := store.RevokeProjectBinding(txCtx, "alpha")
+	revoked, err := store.RevokeProjectBinding(txCtx, "alpha", "Rebinding after host move", "operator")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if revoked.ID != rebound.ID || revoked.RevokedAt == nil || !revoked.RevokedAt.Equal(revokedAt) {
+	if revoked.ID != rebound.ID || revoked.RevokedAt == nil || !revoked.RevokedAt.Equal(revokedAt) ||
+		revoked.RevokeReason == nil || *revoked.RevokeReason != "Rebinding after host move" ||
+		revoked.RevokedBy == nil || *revoked.RevokedBy != "operator" {
 		t.Fatalf("revocation record: %+v", revoked)
 	}
 	if active, err := store.ActiveProjectBinding(txCtx, "alpha"); err != nil || active != nil {
@@ -176,11 +180,21 @@ func TestProjectBindingsPostgres(t *testing.T) {
 	if history, err := store.ProjectBindingHistory(txCtx, "alpha", 0); err != nil || len(history.Items) != 2 {
 		t.Fatalf("revocation must preserve history: %+v %v", history, err)
 	}
-	if _, err := store.RevokeProjectBinding(txCtx, "alpha"); !errors.Is(err, storage.ErrProjectBindingNotFound) {
+	if _, err := store.RevokeProjectBinding(txCtx, "alpha", "reason", "operator"); !errors.Is(err, storage.ErrProjectBindingNotFound) {
 		t.Fatalf("second revoke must report the absent active binding: %v", err)
 	}
-	if _, err := store.RevokeProjectBinding(txCtx, "beta"); !errors.Is(err, storage.ErrProjectBindingNotFound) {
+	if _, err := store.RevokeProjectBinding(txCtx, "beta", "reason", "operator"); !errors.Is(err, storage.ErrProjectBindingNotFound) {
 		t.Fatalf("revoking an unbound project must report the absent active binding: %v", err)
+	}
+	for _, bad := range [][2]string{
+		{"", "operator"},
+		{strings.Repeat("r", 4001), "operator"},
+		{"reason", ""},
+		{"reason", " "},
+	} {
+		if _, err := store.RevokeProjectBinding(txCtx, "alpha", bad[0], bad[1]); !errors.Is(err, storage.ErrInvalidProjectBinding) {
+			t.Fatalf("malformed revocation accepted: %q %v", bad, err)
+		}
 	}
 
 	// Unknown projects and malformed requests are rejected.

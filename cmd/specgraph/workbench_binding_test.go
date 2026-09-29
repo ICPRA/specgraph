@@ -24,7 +24,7 @@ func TestWorkbenchProjectBindingCommandProtocol(t *testing.T) {
 	for _, role := range []auth.Role{auth.RoleReader, auth.RoleAdmin} {
 		for _, test := range []struct{ operation, body string }{
 			{"bind-project", `{"environmentId":"env","nativeProjectId":"native","workspaceRoot":"/ws","reason":"Confirmed first dispatch"}`},
-			{"unbind-project", `{}`},
+			{"unbind-project", `{"reason":"Rebinding after host move"}`},
 		} {
 			var output bytes.Buffer
 			called := false

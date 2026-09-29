@@ -2221,7 +2221,9 @@ CREATE TABLE public.project_bindings (
     reason text NOT NULL CHECK (char_length(reason) BETWEEN 1 AND 4000),
     actor text NOT NULL CHECK (btrim(actor) <> ''),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    revoked_at timestamp with time zone
+    revoked_at timestamp with time zone,
+    revoke_reason text CHECK (revoke_reason IS NULL OR char_length(revoke_reason) BETWEEN 1 AND 4000),
+    revoked_by text CHECK (revoked_by IS NULL OR btrim(revoked_by) <> '')
 );
 
 CREATE UNIQUE INDEX project_bindings_active ON public.project_bindings USING btree (project_slug) WHERE (revoked_at IS NULL);

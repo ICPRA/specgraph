@@ -29,6 +29,8 @@ type ProjectBinding struct {
 	Actor           string     `json:"actor"`
 	CreatedAt       time.Time  `json:"createdAt" db:"created_at"`
 	RevokedAt       *time.Time `json:"revokedAt" db:"revoked_at"`
+	RevokeReason    *string    `json:"revokeReason" db:"revoke_reason"`
+	RevokedBy       *string    `json:"revokedBy" db:"revoked_by"`
 }
 
 // ProjectBindingHistory pages immutable binding records by their decimal identity cursor.
@@ -38,12 +40,13 @@ type ProjectBindingHistory struct {
 	NextCursor string           `json:"nextCursor"`
 }
 
-const projectBindingColumns = `id::text,project_slug,environment_id,native_project_id,workspace_root,reason,actor,created_at,revoked_at`
+const projectBindingColumns = `id::text,project_slug,environment_id,native_project_id,workspace_root,reason,actor,created_at,revoked_at,revoke_reason,revoked_by`
 
 func scanProjectBinding(row pgx.Row) (ProjectBinding, error) {
 	var binding ProjectBinding
 	err := row.Scan(&binding.ID, &binding.ProjectSlug, &binding.EnvironmentID, &binding.NativeProjectID,
-		&binding.WorkspaceRoot, &binding.Reason, &binding.Actor, &binding.CreatedAt, &binding.RevokedAt)
+		&binding.WorkspaceRoot, &binding.Reason, &binding.Actor, &binding.CreatedAt, &binding.RevokedAt,
+		&binding.RevokeReason, &binding.RevokedBy)
 	return binding, err
 }
 
@@ -92,12 +95,13 @@ func (s *Store) BindProject(ctx context.Context, projectSlug, environmentID, nat
 }
 
 // RevokeProjectBinding ends the active binding without deleting its history.
-func (s *Store) RevokeProjectBinding(ctx context.Context, projectSlug string) (*ProjectBinding, error) {
-	if strings.TrimSpace(projectSlug) == "" {
+// The revocation reason and actor are recorded on the revoked row for audit.
+func (s *Store) RevokeProjectBinding(ctx context.Context, projectSlug, reason, actor string) (*ProjectBinding, error) {
+	if strings.TrimSpace(projectSlug) == "" || strings.TrimSpace(reason) == "" || utf8.RuneCountInString(reason) > 4000 || strings.TrimSpace(actor) == "" {
 		return nil, storage.ErrInvalidProjectBinding
 	}
-	binding, err := scanProjectBinding(s.queryRow(ctx, `UPDATE project_bindings SET revoked_at=$2
-		WHERE project_slug=$1 AND revoked_at IS NULL RETURNING `+projectBindingColumns, projectSlug, s.now()))
+	binding, err := scanProjectBinding(s.queryRow(ctx, `UPDATE project_bindings SET revoked_at=$2,revoke_reason=$3,revoked_by=$4
+		WHERE project_slug=$1 AND revoked_at IS NULL RETURNING `+projectBindingColumns, projectSlug, s.now(), reason, actor))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, storage.ErrProjectBindingNotFound
 	}

@@ -155,13 +155,16 @@ func ExecuteWorkbenchCommand(ctx context.Context, root *postgres.Store, operatio
 		}
 		return encoded, nil
 	case "unbind-project":
-		var req struct{}
+		var req struct {
+			Reason string `json:"reason"`
+		}
 		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.DisallowUnknownFields()
-		if len(body) > 32<<10 || validateSlug(slug) != nil || decoder.Decode(&req) != nil || decoder.Decode(new(any)) != io.EOF || strings.TrimSpace(actor) == "" {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("unbind-project requires an empty object body"))
+		if len(body) > 32<<10 || validateSlug(slug) != nil || decoder.Decode(&req) != nil || decoder.Decode(new(any)) != io.EOF ||
+			strings.TrimSpace(req.Reason) == "" || utf8.RuneCountInString(req.Reason) > 4000 || strings.TrimSpace(actor) == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("unbind-project requires a reason of 1-4000 characters"))
 		}
-		binding, err := store.RevokeProjectBinding(ctx, project)
+		binding, err := store.RevokeProjectBinding(ctx, project, req.Reason, actor)
 		if err != nil {
 			return nil, fmt.Errorf("workbench command: %w", err)
 		}
