@@ -6,6 +6,7 @@ package auth_test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -225,6 +226,38 @@ func TestResolveAPIKey_MatchingSecretSucceeds(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "u1", id.UserID)
 	require.Equal(t, "apikey:k1", id.Subject)
+	require.Equal(t, storage.KindHuman, id.UserKind)
+}
+
+func TestResolveAPIKey_UserKindProvenance(t *testing.T) {
+	legacy := &auth.Identity{UserID: "legacy-user", Source: "apikey"}
+	require.Equal(t, "legacy-user", legacy.UserID)
+	require.Equal(t, "apikey", legacy.Source)
+	require.Empty(t, legacy.UserKind, "unverified identity metadata remains unknown")
+	for _, kind := range []storage.Kind{storage.KindHuman, storage.KindServiceAccount, ""} {
+		t.Run(string(kind), func(t *testing.T) {
+			stub := &usersBackendStub{
+				lookupAPIKey: func(_ context.Context, prefix string) (*storage.APIKey, error) {
+					return &storage.APIKey{ID: "k1", UserID: "u1", Prefix: prefix, PHCHash: stubPHCHash, RoleDowngrade: "reader"}, nil
+				},
+				getUserByID: func(_ context.Context, id string) (*storage.User, error) {
+					return activeUser(id, "writer", kind), nil
+				},
+			}
+			resolver, err := auth.NewIdentityStore(auth.IdentityStoreConfig{Users: stub, Tracker: &noopTracker{}})
+			require.NoError(t, err)
+			identity, err := resolver.Resolve(context.Background(), stubAPIKeyToken("abc12345"))
+			require.NoError(t, err)
+			require.Equal(t, kind, identity.UserKind)
+			require.Equal(t, "apikey", identity.Source, "credential type does not determine user kind")
+			require.Equal(t, "u1", identity.UserID)
+			require.Equal(t, auth.RoleReader, identity.EffectiveRole, "user kind must not change role clamping")
+			encoded, err := json.Marshal(identity)
+			require.NoError(t, err)
+			require.NotContains(t, string(encoded), "UserKind", "verified kind is internal-only")
+			require.NotContains(t, string(encoded), "user_kind")
+		})
+	}
 }
 
 // --- Task 13: owner load + soft-delete check ---
@@ -518,6 +551,7 @@ func TestResolveJWT_ExistingBindingResolves(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "u1", id.UserID)
 	require.Equal(t, "oidc:user-123", id.Subject)
+	require.Equal(t, storage.KindHuman, id.UserKind)
 	require.Equal(t, auth.Role("writer"), id.Role) // NOT admin from claims
 	require.Equal(t, auth.Role("writer"), id.EffectiveRole)
 	require.Equal(t, "oidc", id.Source)
@@ -615,6 +649,7 @@ func TestResolveJWT_JITCreatesNewUser(t *testing.T) {
 	id, err := store.Resolve(context.Background(), token)
 	require.NoError(t, err)
 	require.Equal(t, "new-user", id.UserID)
+	require.Equal(t, storage.KindHuman, id.UserKind)
 	require.Equal(t, auth.Role("reader"), id.Role)
 	require.NotNil(t, capturedUser)
 	require.Equal(t, "new@example.com", capturedUser.Email)

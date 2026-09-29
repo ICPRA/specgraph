@@ -5,6 +5,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -30,6 +31,36 @@ func txToContext(ctx context.Context, tx pgx.Tx) context.Context {
 func txFromContext(ctx context.Context) (pgx.Tx, bool) {
 	tx, ok := ctx.Value(txKey{}).(pgx.Tx)
 	return tx, ok
+}
+
+// RunReadSnapshot keeps all project-view reads on one committed database snapshot.
+// It must not silently join a write transaction with weaker isolation.
+func (s *Store) RunReadSnapshot(ctx context.Context, fn func(context.Context) error) (err error) {
+	if _, exists := txFromContext(ctx); exists {
+		return errors.New("postgres: read snapshot cannot nest inside another transaction")
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return fmt.Errorf("postgres: begin read snapshot: %w", err)
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if rollbackErr := tx.Rollback(cleanup); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+			err = errors.Join(err, fmt.Errorf("postgres: release read snapshot: %w", rollbackErr))
+		}
+	}()
+	snapshotCtx := txToContext(ctx, tx)
+	if _, err := s.GetProject(snapshotCtx, s.project); err != nil {
+		return err
+	}
+	if err := fn(snapshotCtx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: finish read snapshot: %w", err)
+	}
+	return nil
 }
 
 // RunInTransaction executes fn within a single PostgreSQL transaction.

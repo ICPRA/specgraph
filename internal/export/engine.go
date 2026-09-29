@@ -226,6 +226,14 @@ func (e *Engine) Import(ctx context.Context, data []byte, force, requireSig bool
 	if err := e.verifySignature(data, &doc, requireSig); err != nil {
 		return nil, fmt.Errorf("import signature: %w", err)
 	}
+	for _, spec := range doc.Data.Specs {
+		if spec == nil {
+			return nil, errors.New("import contains a null spec")
+		}
+		if spec.Role != "" && spec.Role != storage.SpecRoleWork {
+			return nil, fmt.Errorf("import spec %q: role %q requires role-aware structure restoration", spec.Slug, spec.Role)
+		}
+	}
 
 	if err := validateRefs(&doc); err != nil {
 		return nil, fmt.Errorf("import referential integrity: %w", err)

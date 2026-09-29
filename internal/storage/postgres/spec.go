@@ -178,6 +178,9 @@ func (s *Store) CreateSpec(
 
 	var result *storage.Spec
 	err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
 		// Guard: slug must not already exist in this project.
 		var exists int
 		err := s.queryRow(txCtx,
@@ -207,7 +210,7 @@ func (s *Store) CreateSpec(
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, '',
 			         $10, $11, $12, $13,
 			         $14, 1, $15, $15)
-			 RETURNING id, slug, project_slug, intent, stage, priority, complexity,
+			 RETURNING id, slug, project_slug, intent, stage, role, priority, complexity,
 			           provenance_type, provenance_detail,
 			           superseded_by, supersedes, notes, content_hash, version,
 			           spark_output, shape_output, specify_output, decompose_output,
@@ -234,6 +237,10 @@ func (s *Store) CreateSpec(
 			Priority:   priority,
 			Complexity: complexity,
 		}
+		allFields.SparkOutput = outputs["spark_output"]
+		allFields.ShapeOutput = outputs["shape_output"]
+		allFields.SpecifyOutput = outputs["specify_output"]
+		allFields.DecomposeOutput = outputs["decompose_output"]
 		deltas := storage.ComputeFieldDeltas(&storage.SpecFields{}, &allFields)
 		summary := "Spec created"
 		if bornAtDone {
@@ -305,7 +312,7 @@ func buildOutputsMap(
 // Returns storage.ErrSpecNotFound if no match.
 func (s *Store) GetSpec(ctx context.Context, slug string) (*storage.Spec, error) {
 	row := s.queryRow(ctx,
-		`SELECT s.id, s.slug, s.project_slug, s.intent, s.stage, s.priority, s.complexity,
+		`SELECT s.id, s.slug, s.project_slug, s.intent, s.stage, s.role, s.priority, s.complexity,
 		        s.provenance_type, s.provenance_detail,
 		        s.superseded_by, s.supersedes, s.notes, s.content_hash, s.version,
 		        s.spark_output, s.shape_output, s.specify_output, s.decompose_output,
@@ -337,29 +344,30 @@ func (s *Store) GetSpec(ctx context.Context, slug string) (*storage.Spec, error)
 // scanSpec reads a Spec from a single pgx.Row without the conversation_count column.
 func scanSpec(row pgx.Row) (*storage.Spec, error) {
 	var (
-		id              string
-		slug            string
-		projectSlug     string
-		intent          string
-		stage           string
-		priority        string
-		complexity      string
-		provenanceType  string
+		id               string
+		slug             string
+		projectSlug      string
+		intent           string
+		stage            string
+		role             string
+		priority         string
+		complexity       string
+		provenanceType   string
 		provenanceDetail []byte
-		supersededBy    string
-		supersedes      string
-		notes           string
-		contentHash     string
-		version         int32
-		sparkOutput     *storage.SparkOutput
-		shapeOutput     *storage.ShapeOutput
-		specifyOutput   *storage.SpecifyOutput
-		decomposeOutput *storage.DecomposeOutput
-		createdAt       time.Time
-		updatedAt       time.Time
+		supersededBy     string
+		supersedes       string
+		notes            string
+		contentHash      string
+		version          int32
+		sparkOutput      *storage.SparkOutput
+		shapeOutput      *storage.ShapeOutput
+		specifyOutput    *storage.SpecifyOutput
+		decomposeOutput  *storage.DecomposeOutput
+		createdAt        time.Time
+		updatedAt        time.Time
 	)
 	if err := row.Scan(
-		&id, &slug, &projectSlug, &intent, &stage, &priority, &complexity,
+		&id, &slug, &projectSlug, &intent, &stage, &role, &priority, &complexity,
 		&provenanceType, &provenanceDetail,
 		&supersededBy, &supersedes, &notes, &contentHash, &version,
 		&sparkOutput, &shapeOutput, &specifyOutput, &decomposeOutput,
@@ -371,7 +379,7 @@ func scanSpec(row pgx.Row) (*storage.Spec, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan spec %q: %w", slug, err)
 	}
-	return buildSpec(id, slug, intent, stage, priority, complexity,
+	return buildSpec(id, slug, intent, stage, role, priority, complexity,
 		storage.SpecProvenanceType(provenanceType), detail,
 		supersededBy, supersedes, notes, contentHash, version,
 		sparkOutput, shapeOutput, specifyOutput, decomposeOutput,
@@ -386,6 +394,7 @@ func scanSpecWithCount(row pgx.Row) (*storage.Spec, error) {
 		projectSlug      string
 		intent           string
 		stage            string
+		role             string
 		priority         string
 		complexity       string
 		provenanceType   string
@@ -404,7 +413,7 @@ func scanSpecWithCount(row pgx.Row) (*storage.Spec, error) {
 		convCount        int
 	)
 	if err := row.Scan(
-		&id, &slug, &projectSlug, &intent, &stage, &priority, &complexity,
+		&id, &slug, &projectSlug, &intent, &stage, &role, &priority, &complexity,
 		&provenanceType, &provenanceDetail,
 		&supersededBy, &supersedes, &notes, &contentHash, &version,
 		&sparkOutput, &shapeOutput, &specifyOutput, &decomposeOutput,
@@ -417,7 +426,7 @@ func scanSpecWithCount(row pgx.Row) (*storage.Spec, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan spec %q: %w", slug, err)
 	}
-	return buildSpec(id, slug, intent, stage, priority, complexity,
+	return buildSpec(id, slug, intent, stage, role, priority, complexity,
 		storage.SpecProvenanceType(provenanceType), detail,
 		supersededBy, supersedes, notes, contentHash, version,
 		sparkOutput, shapeOutput, specifyOutput, decomposeOutput,
@@ -425,7 +434,7 @@ func scanSpecWithCount(row pgx.Row) (*storage.Spec, error) {
 }
 
 func buildSpec(
-	id, slug, intent, stage, priority, complexity string,
+	id, slug, intent, stage, role, priority, complexity string,
 	provenance storage.SpecProvenanceType,
 	provenanceDetail storage.SpecProvenanceDetail,
 	supersededBy, supersedes, notes, contentHash string,
@@ -442,6 +451,7 @@ func buildSpec(
 		Slug:              slug,
 		Intent:            intent,
 		Stage:             storage.SpecStage(stage),
+		Role:              storage.SpecRole(role),
 		Priority:          storage.SpecPriority(priority),
 		Complexity:        storage.SpecComplexity(complexity),
 		Version:           version,
@@ -465,7 +475,7 @@ func buildSpec(
 // Empty filter values mean "no filter". limit=0 means no limit.
 func (s *Store) ListSpecs(ctx context.Context, stage, priority string, limit int) ([]*storage.Spec, error) {
 	rows, err := s.query(ctx,
-		`SELECT s.id, s.slug, s.project_slug, s.intent, s.stage, s.priority, s.complexity,
+		`SELECT s.id, s.slug, s.project_slug, s.intent, s.stage, s.role, s.priority, s.complexity,
 		        s.provenance_type, s.provenance_detail,
 		        s.superseded_by, s.supersedes, s.notes, s.content_hash, s.version,
 		        s.spark_output, s.shape_output, s.specify_output, s.decompose_output,
@@ -493,6 +503,7 @@ func (s *Store) ListSpecs(ctx context.Context, stage, priority string, limit int
 			projectSlug      string
 			intent           string
 			stageVal         string
+			role             string
 			priorityVal      string
 			complexity       string
 			provenanceType   string
@@ -511,7 +522,7 @@ func (s *Store) ListSpecs(ctx context.Context, stage, priority string, limit int
 			convCount        int
 		)
 		if err := rows.Scan(
-			&id, &slug, &projectSlug, &intent, &stageVal, &priorityVal, &complexity,
+			&id, &slug, &projectSlug, &intent, &stageVal, &role, &priorityVal, &complexity,
 			&provenanceType, &provenanceDetail,
 			&supersededBy, &supersedes, &notes, &contentHash, &version,
 			&sparkOutput, &shapeOutput, &specifyOutput, &decomposeOutput,
@@ -524,7 +535,7 @@ func (s *Store) ListSpecs(ctx context.Context, stage, priority string, limit int
 		if err != nil {
 			return nil, fmt.Errorf("postgres: list specs: decode provenance %q: %w", slug, err)
 		}
-		specs = append(specs, buildSpec(id, slug, intent, stageVal, priorityVal, complexity,
+		specs = append(specs, buildSpec(id, slug, intent, stageVal, role, priorityVal, complexity,
 			storage.SpecProvenanceType(provenanceType), detail,
 			supersededBy, supersedes, notes, contentHash, version,
 			sparkOutput, shapeOutput, specifyOutput, decomposeOutput,
@@ -548,7 +559,7 @@ func (s *Store) BatchGetSpecs(ctx context.Context, slugs []string) (map[string]*
 	}
 
 	rows, err := s.query(ctx,
-		`SELECT s.id, s.slug, s.project_slug, s.intent, s.stage, s.priority, s.complexity,
+		`SELECT s.id, s.slug, s.project_slug, s.intent, s.stage, s.role, s.priority, s.complexity,
 		        s.provenance_type, s.provenance_detail,
 		        s.superseded_by, s.supersedes, s.notes, s.content_hash, s.version,
 		        s.spark_output, s.shape_output, s.specify_output, s.decompose_output,
@@ -571,6 +582,7 @@ func (s *Store) BatchGetSpecs(ctx context.Context, slugs []string) (map[string]*
 			projectSlug      string
 			intent           string
 			stage            string
+			role             string
 			priority         string
 			complexity       string
 			provenanceType   string
@@ -589,7 +601,7 @@ func (s *Store) BatchGetSpecs(ctx context.Context, slugs []string) (map[string]*
 			convCount        int
 		)
 		if err := rows.Scan(
-			&id, &slug, &projectSlug, &intent, &stage, &priority, &complexity,
+			&id, &slug, &projectSlug, &intent, &stage, &role, &priority, &complexity,
 			&provenanceType, &provenanceDetail,
 			&supersededBy, &supersedes, &notes, &contentHash, &version,
 			&sparkOutput, &shapeOutput, &specifyOutput, &decomposeOutput,
@@ -602,7 +614,7 @@ func (s *Store) BatchGetSpecs(ctx context.Context, slugs []string) (map[string]*
 		if err != nil {
 			return nil, fmt.Errorf("postgres: batch get specs: decode provenance %q: %w", slug, err)
 		}
-		result[slug] = buildSpec(id, slug, intent, stage, priority, complexity,
+		result[slug] = buildSpec(id, slug, intent, stage, role, priority, complexity,
 			storage.SpecProvenanceType(provenanceType), detail,
 			supersededBy, supersedes, notes, contentHash, version,
 			sparkOutput, shapeOutput, specifyOutput, decomposeOutput,
@@ -625,6 +637,9 @@ func (s *Store) UpdateSpec(ctx context.Context, slug string, intent, stage, prio
 
 	var result *storage.Spec
 	err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
 		// Read current spec for version guard and field delta computation.
 		current, err := s.GetSpec(txCtx, slug)
 		if err != nil {
@@ -718,8 +733,8 @@ func (s *Store) UpdateSpec(ctx context.Context, slug string, intent, stage, prio
 			return fmt.Errorf("postgres: spec %q: %w", slug, storage.ErrConcurrentModification)
 		}
 
-		// Create changelog entry only if content hash changed (substantive update).
-		if ch != current.ContentHash {
+		// Intent provenance must record exact changes even if the hash is unchanged.
+		if ch != current.ContentHash || newIntent != current.Intent {
 			oldFields := &storage.SpecFields{
 				Intent:     current.Intent,
 				Stage:      string(current.Stage),

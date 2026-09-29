@@ -5,6 +5,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -24,6 +25,9 @@ func (s *Store) GenerateBundle(ctx context.Context, slug string) (*storage.Bundl
 	spec, err := s.GetSpec(ctx, slug)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: generate bundle: %w", err)
+	}
+	if spec.Role == storage.SpecRoleSummary {
+		return nil, storage.ErrSummaryNotExecutable
 	}
 
 	if spec.Stage != storage.SpecStageApproved && string(spec.Stage) != "in_progress" {
@@ -56,12 +60,14 @@ func (s *Store) GenerateBundle(ctx context.Context, slug string) (*storage.Bundl
 
 // RecordProgress stores a progress event from an executing agent.
 func (s *Store) RecordProgress(ctx context.Context, slug, agent, message string) error {
-	return s.recordClaimedEvent(ctx, slug, agent, "progress", message)
+	_, err := s.recordClaimedEvent(ctx, slug, agent, "progress", message)
+	return err
 }
 
 // RecordBlocker stores a blocker event from an executing agent.
 func (s *Store) RecordBlocker(ctx context.Context, slug, agent, description string) error {
-	return s.recordClaimedEvent(ctx, slug, agent, "blocker", description)
+	_, err := s.recordClaimedEvent(ctx, slug, agent, "blocker", description)
+	return err
 }
 
 // RecordCompletion stores a completion event and transitions the spec to done.
@@ -69,18 +75,201 @@ func (s *Store) RecordBlocker(ctx context.Context, slug, agent, description stri
 // stage transition, content hash recomputation, changelog checkpoint, claim
 // deletion, and dependency hash refresh all occur in a single transaction.
 func (s *Store) RecordCompletion(ctx context.Context, slug, agent string) error {
-	return s.RunInTransaction(ctx, func(txCtx context.Context) error {
-		if err := s.assertActiveClaim(txCtx, slug, agent); err != nil {
+	return s.recordCompletion(ctx, slug, agent, "")
+}
+
+// CompleteOwnRun derives both selectors from the trusted host's current bound identity.
+func (s *Store) CompleteOwnRun(ctx context.Context, scope storage.MailScope) (storage.RunSelfCompletion, error) {
+	var result storage.RunSelfCompletion
+	err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
 			return err
+		}
+		run, _, err := s.reviewActorRun(txCtx, scope)
+		if err != nil {
+			return err
+		}
+		slug, err := s.RunBindingTask(txCtx, run)
+		if err != nil {
+			return err
+		}
+		if err := s.RecordCompletion(txCtx, slug, run); err != nil {
+			return err
+		}
+		result = storage.RunSelfCompletion{RunID: run, Completed: slug}
+		return nil
+	})
+	return result, err
+}
+
+func (s *Store) recordCompletion(ctx context.Context, slug, agent, expectedRequest string) error {
+	return s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
+		var program bool
+		if err := s.queryRow(txCtx, `SELECT EXISTS(SELECT 1 FROM run_bindings WHERE project_slug=$1 AND id=$2 AND executor_kind='program')`, s.project, agent).Scan(&program); err != nil {
+			return fmt.Errorf("postgres: recordCompletion: %w", err)
+		}
+		// Serialize with ClaimSpec before checking ownership: an expiring lease
+		// must not be replaced between this check and the done transition.
+		var stage string
+		var version int32
+		var role string
+		err := s.queryRow(txCtx,
+			`SELECT stage, version, role
+			 FROM specs WHERE slug = $1 AND project_slug = $2 FOR UPDATE`,
+			slug, s.project,
+		).Scan(&stage, &version, &role)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("postgres: record completion: spec %q: %w", slug, storage.ErrSpecNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("postgres: record completion: read spec: %w", err)
+		}
+		if stage == string(storage.SpecStageSuperseded) {
+			return storage.ErrSpecTerminal
+		}
+		var alreadyCompleted bool
+		if err := s.queryRow(txCtx, `SELECT EXISTS(SELECT 1 FROM execution_events WHERE project_slug=$1 AND spec_slug=$2 AND agent=$3 AND event_type='completion')`, s.project, slug, agent).Scan(&alreadyCompleted); err != nil {
+			return fmt.Errorf("postgres: read completion replay identity: %w", err)
+		}
+		if !alreadyCompleted {
+			if err := s.rejectHumanOwnedNode(txCtx, slug); err != nil {
+				return err
+			}
+		}
+		if role == string(storage.SpecRoleSummary) {
+			return storage.ErrSummaryNotExecutable
+		}
+		var programCompletion *storage.ProgramCompletion
+		if program {
+			var checkProgramCompletionErr error
+			programCompletion, checkProgramCompletionErr = s.checkProgramCompletion(txCtx, slug, agent, stage)
+			if checkProgramCompletionErr != nil {
+				return checkProgramCompletionErr
+			}
+		}
+		review, err := s.ReadReviewStatus(txCtx, slug)
+		if err != nil {
+			return err
+		}
+		hasReview := false
+		for _, state := range review.Reviews {
+			hasReview = hasReview || state.Request != nil
+			if state.HumanHold {
+				return storage.ErrReviewHumanHold
+			}
+		}
+		var purpose string
+		err = s.queryRow(txCtx, `SELECT COALESCE(cp.body->(CASE WHEN rb.executor_kind='program' THEN 'program_target' ELSE 'dispatch_target' END)->>'workPurpose','') FROM run_bindings rb
+		 JOIN context_packages cp ON cp.project_slug=rb.project_slug AND cp.id=rb.package_id
+		 WHERE rb.project_slug=$1 AND rb.id=$2 AND rb.task_spec_slug=$3`, s.project, agent, slug).Scan(&purpose)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("postgres: recordCompletion: %w", err)
+		}
+		authoring := purpose == "requirements" || purpose == "design"
+		if expectedRequest != "" && !authoring {
+			return storage.ErrInvalidReview
+		}
+		if authoring {
+			outputs, checkAuthoringCompletionErr := s.checkAuthoringCompletion(txCtx, slug, agent, purpose, expectedRequest)
+			if checkAuthoringCompletionErr != nil {
+				return checkAuthoringCompletionErr
+			}
+			if err := s.checkPreparedContractWithOutputs(txCtx, slug, agent, outputs); err != nil {
+				return err
+			}
+			if stage == "done" {
+				var completed bool
+				if err := s.queryRow(txCtx, `SELECT EXISTS(SELECT 1 FROM execution_events WHERE project_slug=$1 AND spec_slug=$2 AND agent=$3 AND event_type='completion')`, s.project, slug, agent).Scan(&completed); err != nil {
+					return fmt.Errorf("postgres: recordCompletion: %w", err)
+				}
+				if !completed {
+					return storage.ErrRunBindingConflict
+				}
+				return nil
+			}
+		} else if !program {
+			if assertActiveClaimErr := s.assertActiveClaim(txCtx, slug, agent); assertActiveClaimErr != nil {
+				return assertActiveClaimErr
+			}
+		}
+
+		// Explicit work purposes determine completion evidence. Unknown legacy
+		// purposes retain their original managed-project delivery-opinion gate.
+		managed, err := s.projectManaged(txCtx)
+		if err != nil {
+			return err
+		}
+		var candidateEvidence *candidateCompletionEvidence
+		switch {
+		case purpose == "implementation":
+			candidateEvidence, err = s.candidateCompletionDelivery(txCtx, agent, slug)
+			if err != nil {
+				return err
+			}
+			candidateDelivery := ""
+			if candidateEvidence != nil {
+				candidateDelivery = candidateEvidence.DeliveryID
+			}
+			if checkImplementationTestsErr := s.checkImplementationTestsForDelivery(txCtx, slug, agent, candidateDelivery); checkImplementationTestsErr != nil {
+				return checkImplementationTestsErr
+			}
+			if checkPreparedContractErr := s.checkPreparedContract(txCtx, slug, agent); checkPreparedContractErr != nil {
+				return checkPreparedContractErr
+			}
+		case purpose == "test_design" || purpose == "test_execution" || purpose == "requirements_review" || purpose == "design_review" || purpose == "investigation" || purpose == "coordination" || purpose == "knowledge":
+			// Finishing this assignment is not approval of its sources or a claim that tested code passed.
+			if checkPreparedContractErr := s.checkPreparedContract(txCtx, slug, agent); checkPreparedContractErr != nil {
+				return checkPreparedContractErr
+			}
+		case !authoring && (managed || hasReview):
+			if hasReview {
+				var currentRun bool
+				if scanErr := s.queryRow(txCtx, `SELECT COALESCE((SELECT d.run_binding_id=$3 FROM deliveries d
+				 JOIN run_bindings b ON b.project_slug=d.project_slug AND b.id=d.run_binding_id
+				 WHERE b.project_slug=$1 AND b.task_spec_slug=$2 ORDER BY d.submitted_at DESC,d.id DESC LIMIT 1),false)`, s.project, slug, agent).Scan(&currentRun); scanErr != nil {
+					return fmt.Errorf("postgres: recordCompletion: %w", scanErr)
+				}
+				if !currentRun {
+					return storage.ErrManagedCompletionRequiresAcceptance
+				}
+			}
+			accepted, hasAcceptedDeliveryErr := s.hasAcceptedDelivery(txCtx, slug, agent)
+			if hasAcceptedDeliveryErr != nil {
+				return hasAcceptedDeliveryErr
+			}
+			if !accepted {
+				return storage.ErrManagedCompletionRequiresAcceptance
+			}
+			if err := s.checkPreparedContract(txCtx, slug, agent); err != nil {
+				return err
+			}
+		}
+
+		if program && stage == "done" {
+			return nil
 		}
 
 		// Insert completion event.
 		eventID := newID("evt")
 		now := s.now()
-		_, err := s.exec(txCtx,
-			`INSERT INTO execution_events (id, spec_slug, project_slug, agent, event_type, message, created_at)
-			 VALUES ($1, $2, $3, $4, 'completion', '', $5)`,
-			eventID, slug, s.project, agent, now,
+		var encodedProgramBasis []byte
+		if programCompletion != nil {
+			basis := map[string]any{"attemptId": programCompletion.AttemptID}
+			if programCompletion.JudgmentID != nil {
+				basis["judgmentId"] = programCompletion.JudgmentID
+			}
+			encodedProgramBasis, err = json.Marshal(basis)
+			if err != nil {
+				return fmt.Errorf("postgres: encode program completion basis: %w", err)
+			}
+		}
+		_, err = s.exec(txCtx,
+			`INSERT INTO execution_events (id, spec_slug, project_slug, agent, event_type, message, created_at,program_completion_basis)
+			 VALUES ($1, $2, $3, $4, 'completion', '', $5,$6)`,
+			eventID, slug, s.project, agent, now, encodedProgramBasis,
 		)
 		if err != nil {
 			return fmt.Errorf("postgres: record completion event: %w", err)
@@ -94,21 +283,6 @@ func (s *Store) RecordCompletion(ctx context.Context, slug, agent string) error 
 		)
 		if err != nil {
 			return fmt.Errorf("postgres: record completion HAS_EVENT edge: %w", err)
-		}
-
-		// Read current spec to get stage and version for changelog.
-		var stage string
-		var version int32
-		err = s.queryRow(txCtx,
-			`SELECT stage, version
-			 FROM specs WHERE slug = $1 AND project_slug = $2`,
-			slug, s.project,
-		).Scan(&stage, &version)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("postgres: record completion: spec %q: %w", slug, storage.ErrSpecNotFound)
-		}
-		if err != nil {
-			return fmt.Errorf("postgres: record completion: read spec: %w", err)
 		}
 
 		newStage := "done"
@@ -180,8 +354,40 @@ func (s *Store) RecordCompletion(ctx context.Context, slug, agent string) error 
 		if err := s.RefreshDependencyHashes(txCtx, slug); err != nil {
 			return fmt.Errorf("postgres: record completion: refresh dependency hashes: %w", err)
 		}
-
-		return nil
+		if managed || authoring || program {
+			tag, err := s.exec(txCtx, `UPDATE run_bindings SET state = 'completed', updated_at = $1
+				WHERE project_slug = $2 AND id = $3 AND task_spec_slug = $4`, now, s.project, agent, slug)
+			if err != nil {
+				return fmt.Errorf("postgres: complete run binding: %w", err)
+			}
+			if tag.RowsAffected() != 1 {
+				return storage.ErrRunBindingNotFound
+			}
+		}
+		if candidateEvidence != nil {
+			var encodedJoin, encodedSatisfaction []byte
+			if candidateEvidence.Join != nil {
+				encodedJoin, err = json.Marshal(candidateEvidence.Join)
+				if err != nil {
+					return fmt.Errorf("postgres: encode candidate completed join: %w", err)
+				}
+			}
+			if candidateEvidence.Satisfaction != nil {
+				encodedSatisfaction, err = json.Marshal(candidateEvidence.Satisfaction)
+				if err != nil {
+					return fmt.Errorf("postgres: encode candidate completed satisfaction: %w", err)
+				}
+			}
+			encodedCondition, err := json.Marshal(candidateEvidence.Condition)
+			if err != nil {
+				return fmt.Errorf("postgres: encode candidate completed reports: %w", err)
+			}
+			if _, err := s.exec(txCtx, `UPDATE candidate_loops SET resolved_at=$3,completed_join=$4,completed_condition=$5,completed_satisfaction=$6
+ WHERE project_slug=$1 AND run_id=$2 AND resolved_at IS NULL`, s.project, agent, now, encodedJoin, encodedCondition, encodedSatisfaction); err != nil {
+				return fmt.Errorf("postgres: close candidate budget: %w", err)
+			}
+		}
+		return s.triggerCompletionHooks(txCtx, slug, "execution", eventID)
 	})
 }
 
@@ -274,16 +480,24 @@ func (s *Store) GetPrimeData(ctx context.Context, slug string) (*storage.PrimeDa
 	return pd, nil
 }
 
-// ReleaseExpiredClaims finds and releases all claims past their lease expiry.
+// ReleaseExpiredClaims releases expired claims without an unresolved dispatch.
 // Returns the count of released claims.
 func (s *Store) ReleaseExpiredClaims(ctx context.Context) (int, error) {
 	var count int
 	err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
 		now := s.now()
 
 		rows, qErr := s.query(txCtx,
 			`DELETE FROM claims
 			 WHERE project_slug = $1 AND lease_expires < $2
+			 AND NOT EXISTS (
+				 SELECT 1 FROM run_dispatches d
+				 WHERE d.project_slug = claims.project_slug AND d.run_id = claims.agent
+				 AND d.released_at IS NULL
+			 )
 			 RETURNING spec_slug, agent`,
 			s.project, now,
 		)
@@ -382,13 +596,60 @@ func (s *Store) fetchBundleDependencies(ctx context.Context, slug string) ([]sto
 
 // recordClaimedEvent verifies claim ownership and atomically inserts an execution event
 // and its HAS_EVENT edge within a single transaction.
-func (s *Store) recordClaimedEvent(ctx context.Context, slug, agent, eventType, message string) error {
-	return s.RunInTransaction(ctx, func(txCtx context.Context) error {
+func (s *Store) recordClaimedEvent(ctx context.Context, slug, agent, eventType, message string, requestedID ...string) (string, error) {
+	eventID := newID("evt")
+	if len(requestedID) != 0 {
+		eventID = requestedID[0]
+	}
+	err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
+		if len(requestedID) != 0 {
+			var priorSlug, priorAgent, priorType, priorMessage string
+			err := s.queryRow(txCtx, `SELECT spec_slug,agent,event_type,message FROM execution_events WHERE project_slug=$1 AND id=$2`, s.project, eventID).
+				Scan(&priorSlug, &priorAgent, &priorType, &priorMessage)
+			if err == nil {
+				if priorSlug != slug || priorAgent != agent || priorType != eventType || priorMessage != message {
+					return storage.ErrNodeOwnershipConflict
+				}
+				return nil
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("postgres: read claimed event replay: %w", err)
+			}
+		}
+		if err := s.rejectHumanOwnedNode(txCtx, slug); err != nil {
+			return err
+		}
+		if pending, err := s.pendingNodeOwnership(txCtx, slug); err != nil {
+			return err
+		} else if pending != nil {
+			captured := false
+			for _, item := range pending.Dispatches {
+				captured = captured || item.RunID == agent
+			}
+			for _, item := range pending.Preparations {
+				captured = captured || item.RunID == agent
+			}
+			if pending.FrozenClaim != nil && pending.FrozenClaim.Agent == agent {
+				current, err := s.readNodeClaim(txCtx, slug)
+				if err != nil {
+					return err
+				}
+				if current == nil || current.Agent != agent || !current.ClaimedAt.Equal(pending.FrozenClaim.ClaimedAt) {
+					return storage.ErrNodeOwnershipPending
+				}
+				captured = true
+			}
+			if !captured {
+				return storage.ErrNodeOwnershipPending
+			}
+		}
 		if err := s.assertActiveClaim(txCtx, slug, agent); err != nil {
 			return err
 		}
 
-		eventID := newID("evt")
 		now := s.now()
 
 		_, err := s.exec(txCtx,
@@ -411,6 +672,7 @@ func (s *Store) recordClaimedEvent(ctx context.Context, slug, agent, eventType, 
 
 		return nil
 	})
+	return eventID, err
 }
 
 // assertActiveClaim checks that the given agent holds a non-expired claim on slug.

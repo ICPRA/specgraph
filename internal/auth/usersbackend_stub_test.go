@@ -190,7 +190,7 @@ func errUnexpectedCall(method string) error {
 }
 
 // activeUser builds an active user for tests.
-func activeUser(id, role string, kind storage.Kind) *storage.User { //nolint:unparam // kind parameter kept for future tests using service accounts
+func activeUser(id, role string, kind storage.Kind) *storage.User {
 	return &storage.User{
 		ID: id, Kind: kind, Role: role, DisplayName: "test-" + id,
 		CreatedAt: time.Now(),

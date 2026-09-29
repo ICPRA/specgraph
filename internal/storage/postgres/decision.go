@@ -50,8 +50,8 @@ func unmarshalRejectedAlts(data []byte) ([]storage.RejectedAlternative, error) {
 		return nil, nil
 	}
 	var items []decisionRejectedAltJSON
-	if err := json.Unmarshal(data, &items); err != nil {
-		return nil, fmt.Errorf("postgres: unmarshal rejected alternatives: %w", err)
+	if decodeErr := json.Unmarshal(data, &items); decodeErr != nil {
+		return nil, fmt.Errorf("postgres: unmarshal rejected alternatives: %w", decodeErr)
 	}
 	if len(items) == 0 {
 		return nil, nil
@@ -187,6 +187,9 @@ func (s *Store) CreateDecision(ctx context.Context, slug, title, body, rationale
 
 	var result *storage.Decision
 	err = s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if lockErr := s.lockDependencyState(txCtx); lockErr != nil {
+			return lockErr
+		}
 		decID := newID("dec")
 		row := s.queryRow(txCtx,
 			`INSERT INTO decisions
@@ -308,8 +311,8 @@ func (s *Store) ListDecisions(ctx context.Context, status storage.DecisionStatus
 		}
 		decisions = append(decisions, dec)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: list decisions: rows: %w", err)
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("postgres: list decisions: rows: %w", rowsErr)
 	}
 	if decisions == nil {
 		decisions = []*storage.Decision{}
@@ -341,6 +344,9 @@ func (s *Store) UpdateDecision(ctx context.Context, slug string, expectedVersion
 
 	var result *storage.Decision
 	err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if lockErr := s.lockDependencyState(txCtx); lockErr != nil {
+			return lockErr
+		}
 		current, getErr := s.GetDecision(txCtx, slug)
 		if getErr != nil {
 			return getErr

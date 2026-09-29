@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/specgraph/specgraph/internal/credentials"
 )
 
 // TestWarnLooseCredentialFile_LoosePermsWarns asserts a group/other-readable
@@ -36,7 +38,7 @@ func TestWarnLooseCredentialFile_LoosePermsWarns(t *testing.T) {
 // no output.
 func TestWarnLooseCredentialFile_SecurePermsSilent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "credentials.yaml")
-	if err := os.WriteFile(path, []byte("servers: {}\n"), 0o600); err != nil {
+	if err := (&credentials.File{}).Save(path); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
 

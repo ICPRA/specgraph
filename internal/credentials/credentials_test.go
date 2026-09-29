@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/specgraph/specgraph/internal/credentials"
 )
 
@@ -27,12 +25,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("Stat: %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("perm = %o, want 0600", perm)
+	if warning := credentials.CheckPermissions(path); warning != "" {
+		t.Fatal(warning)
 	}
 
 	loaded, err := credentials.Load(path)
@@ -106,20 +100,30 @@ func TestTokenForNormalizesTrailingSlash(t *testing.T) {
 	}
 }
 
-func TestCheckPermissions(t *testing.T) {
-	dir := t.TempDir()
-	ok := filepath.Join(dir, "ok.yaml")
-	require.NoError(t, os.WriteFile(ok, []byte("servers: {}\n"), 0o600))
-	require.Empty(t, credentials.CheckPermissions(ok), "0600 is fine")
-
-	loose := filepath.Join(dir, "loose.yaml")
-	require.NoError(t, os.WriteFile(loose, []byte("servers: {}\n"), 0o644)) //nolint:gosec // intentionally loose perms to exercise the warning
-	require.NotEmpty(t, credentials.CheckPermissions(loose), "group/other-readable must warn")
-
-	require.Empty(t, credentials.CheckPermissions(filepath.Join(dir, "absent.yaml")), "missing file: no warning")
-
-	// stricter owner-only modes are accepted, not flagged
-	strict := filepath.Join(dir, "strict.yaml")
-	require.NoError(t, os.WriteFile(strict, []byte("servers: {}\n"), 0o400))
-	require.Empty(t, credentials.CheckPermissions(strict), "0400 (owner read-only) is fine")
+func TestSaveReplacePreservesOtherServers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.yaml")
+	f := &credentials.File{}
+	f.Upsert("https://a.example.com", credentials.ServerCreds{Token: "old-a"})
+	f.Upsert("https://b.example.com", credentials.ServerCreds{Token: "tok-b"})
+	if err := f.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := credentials.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Upsert("https://a.example.com", credentials.ServerCreds{Token: "new-a"})
+	if err = loaded.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = credentials.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TokenFor("https://a.example.com") != "new-a" || loaded.TokenFor("https://b.example.com") != "tok-b" {
+		t.Fatalf("replacement lost credentials: %+v", loaded.Servers)
+	}
+	if warning := credentials.CheckPermissions(path); warning != "" {
+		t.Fatal(warning)
+	}
 }

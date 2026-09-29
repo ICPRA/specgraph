@@ -53,6 +53,9 @@ func (s *Store) LifecycleAmendSpec(ctx context.Context, slug, reason, reEntrySta
 
 	var result *storage.Spec
 	err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
 		spec, getErr := s.GetSpec(txCtx, slug)
 		if getErr != nil {
 			return fmt.Errorf("postgres: amend spec: pre-read %q: %w", slug, getErr)
@@ -135,6 +138,9 @@ func (s *Store) LifecycleSupersedeSpec(ctx context.Context, oldSlug, newSlug, re
 	}
 
 	txErr := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
 		// Acquire row locks on both specs up front, in a deterministic
 		// (lexicographic) order. Two concurrent mutually-superseding operations
 		// (A→B and B→A) would otherwise lock the two rows in opposite orders and
@@ -318,12 +324,26 @@ func (s *Store) LifecycleSupersedeSpec(ctx context.Context, oldSlug, newSlug, re
 func (s *Store) LifecycleAbandonSpec(ctx context.Context, slug, reason string) (*storage.Spec, error) {
 	var result *storage.Spec
 	err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
 		spec, getErr := s.GetSpec(txCtx, slug)
 		if getErr != nil {
 			return fmt.Errorf("postgres: abandon spec: pre-read %q: %w", slug, getErr)
 		}
 		if terminalStages[spec.Stage] {
 			return fmt.Errorf("abandon spec %q (stage=%s): %w", slug, spec.Stage, storage.ErrSpecTerminal)
+		}
+		var pending bool
+		if err := s.queryRow(txCtx, `SELECT
+			EXISTS(SELECT 1 FROM run_dispatches WHERE project_slug=$1 AND task_slug=$2 AND (stop_confirmed_at IS NULL OR released_at IS NULL))
+			OR EXISTS(SELECT 1 FROM claims c WHERE c.project_slug=$1 AND c.spec_slug=$2 AND c.lease_expires>$3
+			  AND NOT EXISTS(SELECT 1 FROM run_bindings r WHERE r.project_slug=c.project_slug AND r.task_spec_slug=c.spec_slug AND r.id=c.agent
+			    AND NOT EXISTS(SELECT 1 FROM run_dispatches d WHERE d.project_slug=r.project_slug AND d.run_id=r.id)))`, s.project, slug, s.now()).Scan(&pending); err != nil {
+			return fmt.Errorf("postgres: LifecycleAbandonSpec: %w", err)
+		}
+		if pending {
+			return storage.ErrAbandonExecutionPending
 		}
 
 		tag, execErr := s.exec(txCtx,
@@ -345,13 +365,10 @@ func (s *Store) LifecycleAbandonSpec(ctx context.Context, slug, reason string) (
 				return nil
 			})
 		}
-
-		// D-08: an abandoned spec transitions to a terminal, non-executable
-		// state, so any active lease must be released — mirroring amend and
-		// RecordCompletion. Otherwise a dangling CLAIMED_BY edge would point at a
-		// terminal node until the lease expires. Unclaimed specs are a no-op.
-		if relErr := s.releaseActiveClaim(txCtx, slug, "abandon spec"); relErr != nil {
-			return relErr
+		// The guard admits only a claim attributed to this task's never-admitted
+		// preparation. Release that generated metadata, not an executing writer.
+		if err := s.releaseActiveClaim(txCtx, slug, "abandon unadmitted preparation"); err != nil {
+			return err
 		}
 
 		if hashErr := s.recomputeContentHash(txCtx, slug); hashErr != nil {

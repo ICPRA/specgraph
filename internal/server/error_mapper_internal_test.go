@@ -23,6 +23,11 @@ func assertConnectCode(t *testing.T, err error, wantCode connect.Code) {
 	assert.Equal(t, wantCode, connErr.Code())
 }
 
+func TestAuthoringDependencyRemovalPrecondition(t *testing.T) {
+	err := (&AuthoringHandler{}).stageError(context.Background(), storage.ErrDependencyInUse)
+	assertConnectCode(t, err, connect.CodeFailedPrecondition)
+}
+
 func TestSpecError(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -50,6 +55,9 @@ func TestClaimError(t *testing.T) {
 	}{
 		{"spec not found", storage.ErrSpecNotFound, connect.CodeNotFound},
 		{"already claimed", storage.ErrSpecAlreadyClaimed, connect.CodeFailedPrecondition},
+		{"summary claim", storage.ErrSummaryNotExecutable, connect.CodeFailedPrecondition},
+		{"unresolved dispatch claim", storage.ErrDispatchResponsibilityHeld, connect.CodeFailedPrecondition},
+		{"resolved dispatch claim", storage.ErrDispatchResolved, connect.CodeFailedPrecondition},
 		{"not claim owner", storage.ErrNotClaimOwner, connect.CodePermissionDenied},
 		{"spec not claimed", storage.ErrSpecNotClaimed, connect.CodeNotFound},
 		{"connect error passthrough", connect.NewError(connect.CodeUnauthenticated, errors.New("no auth")), connect.CodeUnauthenticated},
@@ -126,7 +134,13 @@ func TestExecutionError(t *testing.T) {
 	}{
 		{"spec not found", storage.ErrSpecNotFound, connect.CodeNotFound},
 		{"spec not approved", storage.ErrSpecNotApproved, connect.CodeFailedPrecondition},
+		{"superseded completion", storage.ErrSpecTerminal, connect.CodeFailedPrecondition},
 		{"agent not claim owner", storage.ErrAgentNotClaimOwner, connect.CodePermissionDenied},
+		{"managed completion without acceptance", storage.ErrManagedCompletionRequiresAcceptance, connect.CodeFailedPrecondition},
+		{"completion requirement review", storage.ErrCompletionRequiresRequirementReview, connect.CodeFailedPrecondition},
+		{"unfinished dependencies", storage.ErrDependenciesNotReady, connect.CodeFailedPrecondition},
+		{"summary execution", storage.ErrSummaryNotExecutable, connect.CodeFailedPrecondition},
+		{"changed dependencies", storage.ErrExecutionDependenciesChanged, connect.CodeFailedPrecondition},
 		{"connect error passthrough", connect.NewError(connect.CodeCanceled, errors.New("canceled")), connect.CodeCanceled},
 		{"unknown error", errors.New("boom"), connect.CodeInternal},
 	}
@@ -165,6 +179,7 @@ func TestLifecycleError(t *testing.T) {
 		{"spec not done", storage.ErrSpecNotDone, connect.CodeFailedPrecondition},
 		{"spec ineligible stage", storage.ErrSpecIneligibleStage, connect.CodeFailedPrecondition},
 		{"spec terminal", storage.ErrSpecTerminal, connect.CodeFailedPrecondition},
+		{"abandon execution pending", storage.ErrAbandonExecutionPending, connect.CodeFailedPrecondition},
 		{"spec ineligible for drift", storage.ErrSpecIneligibleForDrift, connect.CodeFailedPrecondition},
 		{"new spec not found", storage.ErrNewSpecNotFound, connect.CodeNotFound},
 		{"new spec terminal", storage.ErrNewSpecTerminal, connect.CodeFailedPrecondition},

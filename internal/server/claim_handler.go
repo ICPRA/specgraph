@@ -101,6 +101,14 @@ func claimError(err error) error {
 		return connect.NewError(connect.CodeNotFound, errors.New("spec not found"))
 	case errors.Is(err, storage.ErrSpecAlreadyClaimed):
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("spec already claimed"))
+	case errors.Is(err, storage.ErrSummaryNotExecutable):
+		return connect.NewError(connect.CodeFailedPrecondition, storage.ErrSummaryNotExecutable)
+	case errors.Is(err, storage.ErrSpecTerminal):
+		return connect.NewError(connect.CodeFailedPrecondition, storage.ErrSpecTerminal)
+	case errors.Is(err, storage.ErrDispatchResponsibilityHeld):
+		return connect.NewError(connect.CodeFailedPrecondition, storage.ErrDispatchResponsibilityHeld)
+	case errors.Is(err, storage.ErrDispatchResolved):
+		return connect.NewError(connect.CodeFailedPrecondition, storage.ErrDispatchResolved)
 	case errors.Is(err, storage.ErrNotClaimOwner):
 		return connect.NewError(connect.CodePermissionDenied, errors.New("agent does not own the claim"))
 	case errors.Is(err, storage.ErrSpecNotClaimed):

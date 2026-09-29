@@ -800,12 +800,9 @@ func TestLifecycleAmend_ReleasesClaim(t *testing.T) {
 	})
 }
 
-// TestLifecycleAbandon_ReleasesClaim pins WR-01: abandoning a claimed spec
-// transitions it to the terminal `abandoned` state and, like amend and
-// RecordCompletion, releases the active lease — deleting both the claims row and
-// the CLAIMED_BY edge inside the abandon transaction.
-func TestLifecycleAbandon_ReleasesClaim(t *testing.T) {
-	t.Run("ClaimedSpec_ReleasesClaimAndEdge", func(t *testing.T) {
+// Abandoning a spec requires prior execution cleanup; it never stops a writer.
+func TestLifecycleAbandon_RequiresReleasedClaim(t *testing.T) {
+	t.Run("ClaimedSpec_RequiresExplicitRelease", func(t *testing.T) {
 		store := newStore(t)
 		clearDatabase(t, store)
 		ctx := context.Background()
@@ -824,7 +821,11 @@ func TestLifecycleAbandon_ReleasesClaim(t *testing.T) {
 		require.NotNil(t, claim, "precondition: spec must hold an active claim before abandon")
 		require.Equal(t, 1, countClaimedByEdges(t, ctx, "claimed-abandon"), "precondition: CLAIMED_BY edge present")
 
-		// Abandon the claimed spec.
+		_, err = store.LifecycleAbandonSpec(ctx, "claimed-abandon", "no longer needed")
+		require.ErrorIs(t, err, storage.ErrAbandonExecutionPending)
+		require.NotNil(t, mustGetActiveClaim(t, store, ctx, "claimed-abandon"))
+		require.Equal(t, 1, countClaimedByEdges(t, ctx, "claimed-abandon"))
+		require.NoError(t, store.UnclaimSpec(ctx, "claimed-abandon", "agent-1"))
 		abandoned, err := store.LifecycleAbandonSpec(ctx, "claimed-abandon", "no longer needed")
 		require.NoError(t, err)
 		require.Equal(t, storage.SpecStageAbandoned, abandoned.Stage)
@@ -832,10 +833,10 @@ func TestLifecycleAbandon_ReleasesClaim(t *testing.T) {
 		// (a) Claim row gone.
 		after, err := store.GetActiveClaim(ctx, "claimed-abandon")
 		require.NoError(t, err)
-		require.Nil(t, after, "abandon must release the active claim")
+		require.Nil(t, after, "claim was explicitly released before abandon")
 
 		// (b) CLAIMED_BY edge gone.
-		require.Equal(t, 0, countClaimedByEdges(t, ctx, "claimed-abandon"), "abandon must delete the CLAIMED_BY edge")
+		require.Equal(t, 0, countClaimedByEdges(t, ctx, "claimed-abandon"), "claim edge was explicitly released before abandon")
 	})
 
 	t.Run("UnclaimedSpec_NoErrorNoClaim", func(t *testing.T) {

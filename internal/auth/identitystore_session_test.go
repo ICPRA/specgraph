@@ -98,6 +98,7 @@ func TestResolveSession(t *testing.T) {
 	id, err := store.Resolve(context.Background(), token)
 	require.NoError(t, err)
 	require.Equal(t, "u1", id.UserID)
+	require.Equal(t, storage.KindHuman, id.UserKind)
 	require.Equal(t, "oidc:subject-123", id.Subject)
 	require.Equal(t, "oidc", id.Source)
 	require.Equal(t, auth.Role("writer"), id.Role)

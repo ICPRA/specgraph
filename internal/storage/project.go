@@ -15,6 +15,7 @@ type Project struct {
 	UpdatedAt    time.Time
 	SyncAdapters []string // e.g. ["beads", "github"]
 	GitHubRepo   string   // owner/repo for GitHub adapter (optional)
+	Managed      bool     // workbench-managed: completion requires evidence-backed acceptance
 }
 
 // ProjectBackend defines storage operations for project management.

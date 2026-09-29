@@ -9,12 +9,105 @@ import (
 	"github.com/specgraph/specgraph/gen/specgraph/v1/specgraphv1connect"
 )
 
+// Workbench procedure identities share the existing Cedar action registry even
+// though their transport is HTTP/JSON rather than generated ConnectRPC.
+const (
+	WorkbenchReadOwnDeliveryContextProcedure      = "/workbench.v1.WorkbenchService/ReadOwnDeliveryContext"
+	WorkbenchSubmitOwnDeliveryProcedure           = "/workbench.v1.WorkbenchService/SubmitOwnDelivery"
+	WorkbenchInspectMailProcedure                 = "/workbench.v1.WorkbenchService/InspectMail"
+	WorkbenchMailReadProcedure                    = "/workbench.v1.WorkbenchService/MailRead"
+	WorkbenchMailWriteProcedure                   = "/workbench.v1.WorkbenchService/MailWrite"
+	WorkbenchMailManageProcedure                  = "/workbench.v1.WorkbenchService/MailManage"
+	WorkbenchPrepareRunProcedure                  = "/workbench.v1.WorkbenchService/PrepareRun"
+	WorkbenchReadRunContextProcedure              = "/workbench.v1.WorkbenchService/ReadRunContext"
+	WorkbenchDispatchProcedure                    = "/workbench.v1.WorkbenchService/Dispatch"
+	WorkbenchBindRunThreadProcedure               = "/workbench.v1.WorkbenchService/BindRunThread"
+	WorkbenchSubmitDeliveryProcedure              = "/workbench.v1.WorkbenchService/SubmitDelivery"
+	WorkbenchAcceptDeliveryProcedure              = "/workbench.v1.WorkbenchService/AcceptDelivery"
+	WorkbenchCompleteRunProcedure                 = "/workbench.v1.WorkbenchService/CompleteRun"
+	WorkbenchManualCompleteProcedure              = "/workbench.v1.WorkbenchService/ManualComplete"
+	WorkbenchEditDependencyProcedure              = "/workbench.v1.WorkbenchService/EditDependency"
+	WorkbenchSubdivisionProcedure                 = "/workbench.v1.WorkbenchService/Subdivision"
+	WorkbenchChangePreviewProcedure               = "/workbench.v1.WorkbenchService/ChangePreview"
+	WorkbenchSetNodeMarkProcedure                 = "/workbench.v1.WorkbenchService/SetNodeMark"
+	WorkbenchRecordNodeEventProcedure             = "/workbench.v1.WorkbenchService/RecordNodeEvent"
+	WorkbenchRecordOwnNodeEventProcedure          = "/workbench.v1.WorkbenchService/RecordOwnNodeEvent"
+	WorkbenchRecordOwnCandidateJudgmentProcedure  = "/workbench.v1.WorkbenchService/RecordOwnCandidateJudgment"
+	WorkbenchRecordOwnNodeHandoffSummaryProcedure = "/workbench.v1.WorkbenchService/RecordOwnNodeHandoffSummary"
+	WorkbenchAssignAgentReviewProcedure           = "/workbench.v1.WorkbenchService/AssignAgentReview"
+	WorkbenchSubmitAgentReviewProcedure           = "/workbench.v1.WorkbenchService/SubmitAgentReview"
+	WorkbenchRecordTestResultProcedure            = "/workbench.v1.WorkbenchService/RecordTestResult"
+	WorkbenchSubmitAgentTestResultProcedure       = "/workbench.v1.WorkbenchService/SubmitAgentTestResult"
+	WorkbenchCompleteAgentRunProcedure            = "/workbench.v1.WorkbenchService/CompleteAgentRun"
+	WorkbenchAgentPlanningProcedure               = "/workbench.v1.WorkbenchService/AgentPlanning"
+	WorkbenchAgentPlanningDispatchProcedure       = "/workbench.v1.WorkbenchService/AgentPlanningDispatch"
+	WorkbenchConfigureDeliveryHookProcedure       = "/workbench.v1.WorkbenchService/ConfigureDeliveryHook"
+	WorkbenchReadDeliveryHookProcedure            = "/workbench.v1.WorkbenchService/ReadDeliveryHook"
+	WorkbenchDispatchDeliveryHookProcedure        = "/workbench.v1.WorkbenchService/DispatchDeliveryHook"
+	WorkbenchManageDeliveryHookProcedure          = "/workbench.v1.WorkbenchService/ManageDeliveryHook"
+	WorkbenchPrepareProgramRunProcedure           = "/workbench.v1.WorkbenchService/PrepareProgramRun"
+	WorkbenchReadProgramRunProcedure              = "/workbench.v1.WorkbenchService/ReadProgramRun"
+	WorkbenchReadConversationRunsProcedure        = "/workbench.v1.WorkbenchService/ReadConversationRuns"
+	WorkbenchExecuteProgramRunProcedure           = "/workbench.v1.WorkbenchService/ExecuteProgramRun"
+	WorkbenchManageProgramLoopProcedure           = "/workbench.v1.WorkbenchService/ManageProgramLoop"
+	WorkbenchManageSummaryProcedure               = "/workbench.v1.WorkbenchService/ManageSummary"
+	WorkbenchMergeNodesProcedure                  = "/workbench.v1.WorkbenchService/MergeNodes"
+	WorkbenchAgentSummaryProcedure                = "/workbench.v1.WorkbenchService/AgentSummary"
+	WorkbenchManageCompletionHookProcedure        = "/workbench.v1.WorkbenchService/ManageCompletionHook"
+	WorkbenchReadCompletionHookProcedure          = "/workbench.v1.WorkbenchService/ReadCompletionHook"
+	WorkbenchDispatchCompletionHookProcedure      = "/workbench.v1.WorkbenchService/DispatchCompletionHook"
+)
+
 // procedureActions maps each RPC procedure to a stable, RPC-method-decoupled
 // action name (domain.verb). It replaces the rpcPermissions table: where
 // rpcPermissions held "spec:read", this holds "spec.read", which the Cedar
 // policies gate via the verb action-group. Renaming an RPC method changes
 // only this map, not any policy.
 var procedureActions = map[string]string{
+	WorkbenchReadOwnDeliveryContextProcedure:      "execution.read",
+	WorkbenchSubmitOwnDeliveryProcedure:           "delivery-submission.write",
+	WorkbenchInspectMailProcedure:                 "workbench.manage",
+	WorkbenchMailReadProcedure:                    "mail.read",
+	WorkbenchMailWriteProcedure:                   "mail.write",
+	WorkbenchMailManageProcedure:                  "mail.manage",
+	WorkbenchPrepareRunProcedure:                  "workbench.write",
+	WorkbenchReadRunContextProcedure:              "workbench.write",
+	WorkbenchDispatchProcedure:                    "workbench.manage",
+	WorkbenchBindRunThreadProcedure:               "workbench.write",
+	WorkbenchSubmitDeliveryProcedure:              "workbench.write",
+	WorkbenchAcceptDeliveryProcedure:              "workbench.manage",
+	WorkbenchCompleteRunProcedure:                 "workbench.write",
+	WorkbenchManualCompleteProcedure:              "workbench.manage",
+	WorkbenchEditDependencyProcedure:              "workbench.manage",
+	WorkbenchSubdivisionProcedure:                 "workbench.manage",
+	WorkbenchChangePreviewProcedure:               "workbench.manage",
+	WorkbenchSetNodeMarkProcedure:                 "workbench.manage",
+	WorkbenchRecordNodeEventProcedure:             "workbench.manage",
+	WorkbenchRecordOwnNodeEventProcedure:          "node-event.write",
+	WorkbenchRecordOwnCandidateJudgmentProcedure:  "candidate-judgment.write",
+	WorkbenchRecordOwnNodeHandoffSummaryProcedure: "node-handoff.write",
+	WorkbenchAssignAgentReviewProcedure:           "review-assignment.write",
+	WorkbenchSubmitAgentReviewProcedure:           "review-decision.write",
+	WorkbenchRecordTestResultProcedure:            "workbench.write",
+	WorkbenchSubmitAgentTestResultProcedure:       "test-result.write",
+	WorkbenchCompleteAgentRunProcedure:            "run-completion.write",
+	WorkbenchAgentPlanningProcedure:               "planning.write",
+	WorkbenchAgentPlanningDispatchProcedure:       "planning-dispatch.write",
+	WorkbenchConfigureDeliveryHookProcedure:       "hook-config.write",
+	WorkbenchReadDeliveryHookProcedure:            "execution.read",
+	WorkbenchDispatchDeliveryHookProcedure:        "hook-dispatch.write",
+	WorkbenchManageDeliveryHookProcedure:          "workbench.manage",
+	WorkbenchPrepareProgramRunProcedure:           "workbench.manage",
+	WorkbenchReadProgramRunProcedure:              "execution.read",
+	WorkbenchReadConversationRunsProcedure:        "execution.read",
+	WorkbenchExecuteProgramRunProcedure:           "program-execution.write",
+	WorkbenchManageProgramLoopProcedure:           "workbench.manage",
+	WorkbenchManageSummaryProcedure:               "workbench.manage",
+	WorkbenchMergeNodesProcedure:                  "workbench.manage",
+	WorkbenchAgentSummaryProcedure:                "summary.write",
+	WorkbenchManageCompletionHookProcedure:        "workbench.manage",
+	WorkbenchReadCompletionHookProcedure:          "execution.read",
+	WorkbenchDispatchCompletionHookProcedure:      "program-execution.write",
 	// SpecService
 	specgraphv1connect.SpecServiceGetSpecProcedure:         "spec.read",
 	specgraphv1connect.SpecServiceListSpecsProcedure:       "spec.read",

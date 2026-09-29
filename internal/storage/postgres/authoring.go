@@ -33,6 +33,10 @@ func (s *Store) TransitionStage(ctx context.Context, slug string, from, to stora
 	}
 
 	if err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		// Authoring RPCs transition before storing outputs and linked decisions.
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
 		now := s.now()
 		fromStr := string(from)
 		toStr := string(to)
@@ -109,14 +113,17 @@ func (s *Store) TransitionStage(ctx context.Context, slug string, from, to stora
 // StoreSparkOutput persists the spark stage output as JSONB on the spec row.
 func (s *Store) StoreSparkOutput(ctx context.Context, slug string, output *storage.SparkOutput) error {
 	return s.RunInTransaction(ctx, func(txCtx context.Context) error {
-		oldFields, oldHash, err := s.readSpecFields(txCtx, slug)
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
+		oldFields, _, err := s.readSpecFields(txCtx, slug)
 		if err != nil {
 			return err
 		}
 		if err := s.storeJSONColumn(txCtx, slug, "spark_output", output); err != nil {
 			return err
 		}
-		return s.authoringOutputChangeLog(txCtx, slug, "spark_output", &oldFields, oldHash)
+		return s.authoringOutputChangeLog(txCtx, slug, "spark_output", &oldFields)
 	})
 }
 
@@ -125,7 +132,10 @@ func (s *Store) StoreSparkOutput(ctx context.Context, slug string, output *stora
 // with DECIDED_IN edges (spec->decision per ADR-003).
 func (s *Store) StoreShapeOutput(ctx context.Context, slug string, output *storage.ShapeOutput) error {
 	return s.RunInTransaction(ctx, func(txCtx context.Context) error {
-		oldFields, oldHash, err := s.readSpecFields(txCtx, slug)
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
+		oldFields, _, err := s.readSpecFields(txCtx, slug)
 		if err != nil {
 			return err
 		}
@@ -155,21 +165,24 @@ func (s *Store) StoreShapeOutput(ctx context.Context, slug string, output *stora
 				return fmt.Errorf("add DECIDED_IN edge %q->%q: %w", slug, d.Slug, edgeErr)
 			}
 		}
-		return s.authoringOutputChangeLog(txCtx, slug, "shape_output", &oldFields, oldHash)
+		return s.authoringOutputChangeLog(txCtx, slug, "shape_output", &oldFields)
 	})
 }
 
 // StoreSpecifyOutput persists the specify stage output as JSONB on the spec row.
 func (s *Store) StoreSpecifyOutput(ctx context.Context, slug string, output *storage.SpecifyOutput) error {
 	return s.RunInTransaction(ctx, func(txCtx context.Context) error {
-		oldFields, oldHash, err := s.readSpecFields(txCtx, slug)
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
+		oldFields, _, err := s.readSpecFields(txCtx, slug)
 		if err != nil {
 			return err
 		}
 		if err := s.storeJSONColumn(txCtx, slug, "specify_output", output); err != nil {
 			return err
 		}
-		return s.authoringOutputChangeLog(txCtx, slug, "specify_output", &oldFields, oldHash)
+		return s.authoringOutputChangeLog(txCtx, slug, "specify_output", &oldFields)
 	})
 }
 
@@ -194,7 +207,10 @@ func (s *Store) StoreDecomposeOutput(ctx context.Context, slug string, output *s
 
 	var childSlugs []string
 	err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
-		oldFields, oldHash, rfErr := s.readSpecFields(txCtx, slug)
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
+		oldFields, _, rfErr := s.readSpecFields(txCtx, slug)
 		if rfErr != nil {
 			return rfErr
 		}
@@ -301,7 +317,7 @@ func (s *Store) StoreDecomposeOutput(ctx context.Context, slug string, output *s
 			return storeErr
 		}
 
-		if clErr := s.authoringOutputChangeLog(txCtx, slug, "decompose_output", &oldFields, oldHash); clErr != nil {
+		if clErr := s.authoringOutputChangeLog(txCtx, slug, "decompose_output", &oldFields); clErr != nil {
 			return clErr
 		}
 
@@ -317,19 +333,24 @@ func (s *Store) StoreSafetyFlags(ctx context.Context, slug string, flags []stora
 	if flags == nil {
 		return fmt.Errorf("postgres: safety_flags data must not be nil")
 	}
-	now := s.now()
-	tag, err := s.exec(ctx,
-		`UPDATE specs SET safety_flags = $1, updated_at = $2
-		 WHERE slug = $3 AND project_slug = $4`,
-		flags, now, slug, s.project,
-	)
-	if err != nil {
-		return fmt.Errorf("postgres: store safety_flags: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("postgres: store safety_flags for %q: %w", slug, storage.ErrSpecNotFound)
-	}
-	return nil
+	return s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
+		now := s.now()
+		tag, err := s.exec(txCtx,
+			`UPDATE specs SET safety_flags = $1, updated_at = $2
+			 WHERE slug = $3 AND project_slug = $4`,
+			flags, now, slug, s.project,
+		)
+		if err != nil {
+			return fmt.Errorf("postgres: store safety_flags: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("postgres: store safety_flags for %q: %w", slug, storage.ErrSpecNotFound)
+		}
+		return nil
+	})
 }
 
 // hashInputColumns lists the spec JSONB columns that affect the content hash.
@@ -413,6 +434,7 @@ func (s *Store) readStoredSliceSlugs(ctx context.Context, slug string) ([]string
 func (s *Store) readSpecFields(ctx context.Context, slug string) (storage.SpecFields, string, error) {
 	var (
 		intent          string
+		notes           string
 		stage           string
 		priority        string
 		complexity      string
@@ -423,11 +445,11 @@ func (s *Store) readSpecFields(ctx context.Context, slug string) (storage.SpecFi
 		decomposeOutput *storage.DecomposeOutput
 	)
 	err := s.queryRow(ctx,
-		`SELECT intent, stage, priority, complexity, content_hash,
+		`SELECT intent, stage, priority, complexity, notes, content_hash,
 		        spark_output, shape_output, specify_output, decompose_output
 		 FROM specs WHERE slug = $1 AND project_slug = $2`,
 		slug, s.project,
-	).Scan(&intent, &stage, &priority, &complexity, &contentHash,
+	).Scan(&intent, &stage, &priority, &complexity, &notes, &contentHash,
 		&sparkOutput, &shapeOutput, &specifyOutput, &decomposeOutput)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -441,6 +463,7 @@ func (s *Store) readSpecFields(ctx context.Context, slug string) (storage.SpecFi
 		Stage:      stage,
 		Priority:   priority,
 		Complexity: complexity,
+		Notes:      notes,
 	}
 	if sparkOutput != nil {
 		if b, mErr := json.Marshal(sparkOutput); mErr == nil {
@@ -467,17 +490,16 @@ func (s *Store) readSpecFields(ctx context.Context, slug string) (storage.SpecFi
 }
 
 // authoringOutputChangeLog creates a non-checkpoint changelog entry after a
-// Store*Output method succeeds. Only creates an entry if the content hash changed.
-func (s *Store) authoringOutputChangeLog(ctx context.Context, slug, field string, oldFields *storage.SpecFields, oldHash string) error {
+// Store*Output method succeeds. Exact field deltas, not a hash, determine a change.
+func (s *Store) authoringOutputChangeLog(ctx context.Context, slug, field string, oldFields *storage.SpecFields) error {
 	newFields, newHash, err := s.readSpecFields(ctx, slug)
 	if err != nil {
 		return err
 	}
-	if newHash == oldHash {
+	deltas := storage.ComputeFieldDeltas(oldFields, &newFields)
+	if len(deltas) == 0 {
 		return nil
 	}
-
-	deltas := storage.ComputeFieldDeltas(oldFields, &newFields)
 
 	// Read the current spec to get version and timestamp.
 	var version int32

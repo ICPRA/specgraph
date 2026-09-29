@@ -301,8 +301,22 @@ func executionError(err error) error {
 		return connect.NewError(connect.CodeNotFound, errors.New("spec not found"))
 	case errors.Is(err, storage.ErrSpecNotApproved):
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("spec is not in an approved or in_progress stage"))
+	case errors.Is(err, storage.ErrSpecTerminal):
+		return connect.NewError(connect.CodeFailedPrecondition, storage.ErrSpecTerminal)
 	case errors.Is(err, storage.ErrAgentNotClaimOwner):
 		return connect.NewError(connect.CodePermissionDenied, errors.New("agent does not hold the claim for this spec"))
+	case errors.Is(err, storage.ErrReviewHumanHold):
+		return connect.NewError(connect.CodeFailedPrecondition, storage.ErrReviewHumanHold)
+	case errors.Is(err, storage.ErrManagedCompletionRequiresAcceptance):
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("managed project: completion requires an accepted delivery with evidence"))
+	case errors.Is(err, storage.ErrCompletionRequiresRequirementReview):
+		return connect.NewError(connect.CodeFailedPrecondition, storage.ErrCompletionRequiresRequirementReview)
+	case errors.Is(err, storage.ErrDependenciesNotReady):
+		return connect.NewError(connect.CodeFailedPrecondition, storage.ErrDependenciesNotReady)
+	case errors.Is(err, storage.ErrSummaryNotExecutable):
+		return connect.NewError(connect.CodeFailedPrecondition, storage.ErrSummaryNotExecutable)
+	case errors.Is(err, storage.ErrExecutionDependenciesChanged):
+		return connect.NewError(connect.CodeFailedPrecondition, storage.ErrExecutionDependenciesChanged)
 	default:
 		slog.LogAttrs(context.Background(), slog.LevelError, "executionError: internal error", slog.Any("error", err))
 		return connect.NewError(connect.CodeInternal, errors.New("internal error"))

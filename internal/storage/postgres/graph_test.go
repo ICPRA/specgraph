@@ -342,12 +342,12 @@ func TestGetTransitiveDeps_Diamond(t *testing.T) {
 	require.Len(t, trans, 3, "diamond should yield 3 unique transitive deps: b, c, d")
 }
 
-func TestGetTransitiveDeps_BoundedChain(t *testing.T) {
+func TestPrerequisiteTraversalBeyondFiftyHops(t *testing.T) {
 	store := newStore(t)
 	clearDatabase(t, store)
 	ctx := context.Background()
 
-	// Create chain longer than the 50-hop bound.
+	// A long chain must not silently omit affected obligations.
 	const chainLen = 55
 	slugs := make([]string, 0, chainLen)
 	for i := 0; i < chainLen; i++ {
@@ -365,7 +365,10 @@ func TestGetTransitiveDeps_BoundedChain(t *testing.T) {
 
 	trans, err := store.GetTransitiveDeps(ctx, slugs[len(slugs)-1])
 	require.NoError(t, err)
-	require.Len(t, trans, 50, "traversal should be bounded at depth 50")
+	require.Len(t, trans, chainLen-1)
+	impact, err := store.GetImpact(ctx, slugs[0])
+	require.NoError(t, err)
+	require.Len(t, impact, chainLen-1)
 }
 
 func TestGetImpact(t *testing.T) {
@@ -421,6 +424,47 @@ func TestGetImpact_Diamond(t *testing.T) {
 	impact, err := store.GetImpact(ctx, "d")
 	require.NoError(t, err)
 	require.Len(t, impact, 3, "diamond impact of d should yield a, b, c")
+}
+
+func TestMixedPrerequisiteTraversal(t *testing.T) {
+	store := newStore(t)
+	clearDatabase(t, store)
+	ctx := context.Background()
+	for _, slug := range []string{"upstream", "middle", "downstream", "unrelated"} {
+		_, err := store.CreateSpec(ctx, slug, slug, "", "", storage.SpecProvenanceAuthored, storage.SpecProvenanceDetail{}, nil, nil, nil, nil)
+		require.NoError(t, err)
+	}
+	_, err := store.AddEdge(ctx, "upstream", "middle", storage.EdgeTypeBlocks)
+	require.NoError(t, err)
+	_, err = store.AddEdge(ctx, "downstream", "middle", storage.EdgeTypeDependsOn)
+	require.NoError(t, err)
+	// Equivalent edges must not multiply the reported nodes.
+	_, err = store.AddEdge(ctx, "middle", "downstream", storage.EdgeTypeBlocks)
+	require.NoError(t, err)
+	impact, err := store.GetImpact(ctx, "upstream")
+	require.NoError(t, err)
+	var impacted []string
+	for _, ref := range impact {
+		impacted = append(impacted, ref.Slug)
+	}
+	require.ElementsMatch(t, []string{"middle", "downstream"}, impacted)
+	deps, err := store.GetTransitiveDeps(ctx, "downstream")
+	require.NoError(t, err)
+	var prerequisites []string
+	for _, ref := range deps {
+		prerequisites = append(prerequisites, ref.Slug)
+	}
+	require.ElementsMatch(t, []string{"upstream", "middle"}, prerequisites)
+	_, err = store.AddEdge(ctx, "downstream", "upstream", storage.EdgeTypeBlocks)
+	require.NoError(t, err)
+	impact, err = store.GetImpact(ctx, "upstream")
+	require.NoError(t, err)
+	require.Len(t, impact, 3, "mixed cycles terminate and each reachable node appears once")
+	for _, slug := range []string{"upstream", "middle", "downstream"} {
+		spec, err := store.GetSpec(ctx, slug)
+		require.NoError(t, err)
+		require.Equal(t, storage.SpecStageSpark, spec.Stage, "impact discovery does not cancel or approve work")
+	}
 }
 
 func TestGetReady(t *testing.T) {

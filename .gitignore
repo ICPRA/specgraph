@@ -60,3 +60,8 @@ e2e/ui/node_modules/
 # Lock siblings are covered by the *.mdc.lock pattern above.
 .cursor/rules/specgraph.mdc
 .cursor/rules/specgraph-post-stage.mdc
+
+# Local build artifacts and test scratch (workbench fork)
+*.exe
+*.exe~
+.test-tmp/

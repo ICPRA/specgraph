@@ -91,8 +91,14 @@ func RenderSpecMarkdown(v *specv1.SpecView, opts RenderOpts) string {
 
 	if decisions := v.GetDecisions(); len(decisions) > 0 {
 		b.WriteString("## Decisions\n\n")
+		b.WriteString("Linked records, not blanket execution approval. Proposed, deprecated, superseded, or unspecified decisions are not current approved instructions.\n\n")
 		for _, d := range decisions {
-			fmt.Fprintf(&b, "- [%s] %s\n", d.GetSlug(), d.GetTitle())
+			status := strings.ToLower(strings.TrimPrefix(d.GetStatus().String(), "DECISION_STATUS_"))
+			fmt.Fprintf(&b, "- [%s] %s (status: %s, version: %d)", d.GetSlug(), d.GetTitle(), status, d.GetVersion())
+			if replacement := d.GetSupersededBy(); replacement != "" {
+				fmt.Fprintf(&b, "; superseded by: [%s]", replacement)
+			}
+			b.WriteString("\n")
 		}
 		b.WriteString("\n")
 	}

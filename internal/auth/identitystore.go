@@ -391,6 +391,7 @@ func (s *pgIdentityStore) resolveAPIKey(ctx context.Context, token string) (*Ide
 	s.tracker.Touch(key.ID)
 	return &Identity{
 		UserID:        user.ID,
+		UserKind:      user.Kind,
 		Subject:       "apikey:" + key.ID,
 		DisplayName:   user.DisplayName,
 		Email:         user.Email,
@@ -432,6 +433,7 @@ func (s *pgIdentityStore) resolveSession(ctx context.Context, token string) (*Id
 	}
 	return &Identity{
 		UserID:        user.ID,
+		UserKind:      user.Kind,
 		Subject:       "oidc:" + sess.OIDCSubject,
 		DisplayName:   user.DisplayName,
 		Email:         user.Email,
@@ -624,6 +626,7 @@ func (s *pgIdentityStore) materializeIdentity(ctx context.Context, claims *OIDCC
 	}
 	return &Identity{
 		UserID:        user.ID,
+		UserKind:      user.Kind,
 		Subject:       "oidc:" + claims.Subject,
 		DisplayName:   user.DisplayName,
 		Email:         user.Email,
@@ -777,6 +780,7 @@ func (s *pgIdentityStore) jitResolve(ctx context.Context, claims *OIDCClaims, in
 	}
 	return &Identity{
 		UserID:        user.ID,
+		UserKind:      user.Kind,
 		Subject:       "oidc:" + claims.Subject,
 		DisplayName:   user.DisplayName,
 		Email:         user.Email,

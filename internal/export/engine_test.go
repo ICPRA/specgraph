@@ -39,6 +39,17 @@ func TestImport_RejectsUnsupportedSchemaVersion(t *testing.T) {
 	}
 }
 
+func TestImport_DoesNotSilentlyConvertSummaryToWork(t *testing.T) {
+	for _, role := range []storage.SpecRole{storage.SpecRoleSummary, "unknown"} {
+		doc := Document{SchemaVersion: CurrentSchemaVersion, Data: Data{Specs: []*storage.Spec{{Slug: "parent", Role: role}}}}
+		data, err := json.Marshal(doc)
+		require.NoError(t, err)
+		// No backend: rejection must happen before reading, wiping or writing it.
+		_, err = NewEngine(nil, "", "test").Import(t.Context(), data, true, false)
+		require.ErrorContains(t, err, "role-aware structure restoration")
+	}
+}
+
 // TestImport_RejectsSchemaVersionZero guards against silent data-loss on
 // unversioned/hand-crafted documents. SchemaVersion: 0 (e.g. omitted field)
 // passes the high-version check but must be rejected at the constitution
@@ -395,8 +406,8 @@ func TestImport_V1Document_SingleLayer(t *testing.T) {
 		Data: Data{
 			Project: &storage.Project{Slug: "test-project"},
 			Constitution: &storage.Constitution{
-				Name:  "v1-only",
-				Layer: storage.ConstitutionLayerProject,
+				Name:       "v1-only",
+				Layer:      storage.ConstitutionLayerProject,
 				Principles: []storage.Principle{{ID: "p1", Statement: "P1"}},
 			},
 		},
@@ -495,15 +506,15 @@ func TestExport_MultiLayerConstitution(t *testing.T) {
 
 	// Seed two layers.
 	_, err := backend.UpdateConstitution(ctx, &storage.Constitution{
-		Name:  "org",
-		Layer: storage.ConstitutionLayerOrg,
+		Name:       "org",
+		Layer:      storage.ConstitutionLayerOrg,
 		Principles: []storage.Principle{{ID: "p-org", Statement: "Org"}},
 	})
 	require.NoError(t, err)
 
 	_, err = backend.UpdateConstitution(ctx, &storage.Constitution{
-		Name:  "project",
-		Layer: storage.ConstitutionLayerProject,
+		Name:       "project",
+		Layer:      storage.ConstitutionLayerProject,
 		Principles: []storage.Principle{{ID: "p-proj", Statement: "Proj"}},
 	})
 	require.NoError(t, err)

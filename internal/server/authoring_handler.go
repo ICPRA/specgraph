@@ -1079,6 +1079,9 @@ func (h *AuthoringHandler) stageError(ctx context.Context, err error) error {
 	if errors.Is(err, storage.ErrSpecAlreadyApproved) {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("spec is already approved"))
 	}
+	if errors.Is(err, storage.ErrDependencyInUse) {
+		return connect.NewError(connect.CodeFailedPrecondition, storage.ErrDependencyInUse)
+	}
 	if errors.Is(err, storage.ErrInvalidStageTransition) {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("invalid stage transition"))
 	}

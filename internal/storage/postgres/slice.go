@@ -40,6 +40,9 @@ func (s *Store) CreateSlice(ctx context.Context, sl *storage.Slice) error {
 	}
 
 	return s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
 		_, txErr := s.exec(txCtx,
 			`INSERT INTO slices
 				(slug, project_slug, parent_slug, slice_id, intent, status,
@@ -53,10 +56,10 @@ func (s *Store) CreateSlice(ctx context.Context, sl *storage.Slice) error {
 			return fmt.Errorf("postgres: create slice %q: %w", sl.Slug, txErr)
 		}
 
-		// BELONGS_TO edge: slice -> project.
+		// Membership uniqueness also excludes Spec/Decision slug collisions.
 		_, txErr = s.exec(txCtx,
 			`INSERT INTO edges (from_slug, to_slug, edge_type, project_slug)
-			 VALUES ($1, $2, 'BELONGS_TO', $3) ON CONFLICT DO NOTHING`,
+			 VALUES ($1, $2, 'BELONGS_TO', $3)`,
 			sl.Slug, s.project, s.project,
 		)
 		if txErr != nil {
@@ -123,6 +126,18 @@ func (s *Store) UpdateSlice(ctx context.Context, sl *storage.Slice) error {
 // longer includes. Returns ErrSliceNotFound if no slice row matches.
 func (s *Store) DeleteSlice(ctx context.Context, slug string) error {
 	return s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
+		var inUse bool
+		if err := s.queryRow(txCtx, `SELECT EXISTS(SELECT 1 FROM edges WHERE project_slug=$1 AND
+			((edge_type='DEPENDS_ON' AND to_slug=$2 AND from_slug<>$2) OR
+			 (edge_type='BLOCKS' AND from_slug=$2 AND to_slug<>$2)))`, s.project, slug).Scan(&inUse); err != nil {
+			return fmt.Errorf("postgres: inspect slice dependents: %w", err)
+		}
+		if inUse {
+			return storage.ErrDependencyInUse
+		}
 		// Remove all edges incident to the slice first (both directions) so no
 		// dangling BELONGS_TO/COMPOSES/DEPENDS_ON edges outlive the node.
 		if _, err := s.exec(txCtx,

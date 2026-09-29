@@ -294,6 +294,9 @@ func (h *LifecycleHandler) lifecycleError(op, slug string, err error) error {
 	if errors.Is(err, storage.ErrSpecTerminal) {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New(specMsg(slug, "is in a terminal state")))
 	}
+	if errors.Is(err, storage.ErrAbandonExecutionPending) {
+		return connect.NewError(connect.CodeFailedPrecondition, storage.ErrAbandonExecutionPending)
+	}
 	if errors.Is(err, storage.ErrSpecIneligibleForDrift) {
 		// Reachable via the CheckDrift RPC: driftChecker.Check() returns this
 		// sentinel at the top level when a caller drift-checks a specific

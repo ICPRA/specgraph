@@ -251,6 +251,7 @@ func buildAppHandler(_ context.Context, cfg *config.GlobalConfig, deps *appDeps,
 	server.RegisterAuthoringService(mux, store, opts, maxBytes)
 	server.RegisterAnalyticalPassService(mux, store, ".specgraph/templates", opts, maxBytes)
 	server.RegisterExecutionService(mux, store, deps.skillsSrc, opts, maxBytes)
+	server.RegisterWorkbenchLoop(mux, store, resolver, deps.authorizer)
 	server.RegisterSliceService(mux, store, opts, maxBytes)
 	server.RegisterIdentityService(mux, res.authStore, cfg.Auth.SelfServiceKeys, opts, maxBytes)
 	server.RegisterExportService(mux, store, cfg.Export.SigningKey, buildVersion(), opts, maxBytes)

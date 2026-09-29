@@ -73,9 +73,9 @@ func Load(path string) (*File, error) {
 	return &f, nil
 }
 
-// Save atomically writes the credentials file to path with 0600 permissions,
-// creating parent directories (0700) as needed. It writes to a temporary file
-// in the same directory and renames it into place.
+// Save writes an owner-only credentials file, creating parent directories as
+// needed. It writes to a private temporary file in the same directory and
+// renames it into place (atomic on Unix).
 func (f *File) Save(path string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -87,17 +87,13 @@ func (f *File) Save(path string) error {
 		return fmt.Errorf("marshal credentials: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(dir, ".credentials-*.yaml.tmp")
+	tmp, err := createPrivateTemp(dir)
 	if err != nil {
 		return fmt.Errorf("create temp credentials file: %w", err)
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }() //nolint:errcheck // best-effort cleanup if rename succeeded
 
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close() //nolint:errcheck // already returning an error
-		return fmt.Errorf("chmod temp credentials file: %w", err)
-	}
 	if _, err := tmp.WriteString(fileHeader); err != nil {
 		_ = tmp.Close() //nolint:errcheck // already returning an error
 		return fmt.Errorf("write credentials header: %w", err)
@@ -114,21 +110,4 @@ func (f *File) Save(path string) error {
 		return fmt.Errorf("rename credentials file: %w", err)
 	}
 	return nil
-}
-
-// CheckPermissions returns a warning message if the credentials file at path is
-// readable or writable by group or others (perm & 0o077 != 0). It returns "" if
-// permissions are acceptable or the file does not exist.
-func CheckPermissions(path string) string {
-	info, err := os.Stat(path)
-	if err != nil {
-		return ""
-	}
-	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		return fmt.Sprintf(
-			"warning: credentials file %s has permissions %04o; recommend 0600 (chmod 600 %q)",
-			path, perm, path,
-		)
-	}
-	return ""
 }

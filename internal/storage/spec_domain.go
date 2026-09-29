@@ -5,6 +5,15 @@ package storage
 
 import "time"
 
+// SpecRole distinguishes executable work from a summary parent, independently of stage.
+type SpecRole string
+
+// Spec role values.
+const (
+	SpecRoleWork    SpecRole = "work"
+	SpecRoleSummary SpecRole = "summary"
+)
+
 // SpecStage represents a spec's stage, covering both authoring funnel stages
 // (spark→shape→specify→decompose→approved→in_progress→review→done) and
 // lifecycle terminal states (superseded, abandoned).
@@ -226,6 +235,7 @@ type Spec struct {
 	Slug              string
 	Intent            string
 	Stage             SpecStage
+	Role              SpecRole `json:",omitempty"`
 	Priority          SpecPriority
 	Complexity        SpecComplexity
 	Version           int32

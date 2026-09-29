@@ -4,6 +4,8 @@
 // Package auth provides authentication and authorization for SpecGraph RPCs.
 package auth
 
+import "github.com/specgraph/specgraph/internal/storage"
+
 // Role represents a named authorization role.
 type Role string
 
@@ -17,13 +19,14 @@ const (
 // Identity represents an authenticated principal. Produced by Resolver.Resolve;
 // consumed by the interceptor and by Authorizer implementations.
 type Identity struct {
-	UserID        string // uuid (storage.User.ID)
-	EffectiveRole Role   // min(Role, key.RoleDowngrade); equals Role for OIDC
-	Email         string // from User row
-	Subject       string // "apikey:<id>" | "oidc:<sub>"
-	DisplayName   string // human-friendly name
-	Role          Role   // role name (built-in or custom)
-	Source        string // "apikey" | "oidc"
+	UserID        string       // uuid (storage.User.ID)
+	UserKind      storage.Kind `json:"-"` // from the verified User row; empty when its kind is unknown
+	EffectiveRole Role         // min(Role, key.RoleDowngrade); equals Role for OIDC
+	Email         string       // from User row
+	Subject       string       // "apikey:<id>" | "oidc:<sub>"
+	DisplayName   string       // human-friendly name
+	Role          Role         // role name (built-in or custom)
+	Source        string       // "apikey" | "oidc"
 	// Issuer carries the verified iss claim (OIDC) or the synthetic provider
 	// id (oauth2) that authenticated this identity (D-09). Empty for static
 	// credentials (API keys, sessions resolved by token). Threaded into

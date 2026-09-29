@@ -53,8 +53,8 @@ func unmarshalFieldChanges(data []byte) ([]storage.FieldChange, error) {
 		return nil, nil
 	}
 	var items []fieldChangeJSON
-	if err := json.Unmarshal(data, &items); err != nil {
-		return nil, fmt.Errorf("postgres: unmarshal field changes: %w", err)
+	if decodeErr := json.Unmarshal(data, &items); decodeErr != nil {
+		return nil, fmt.Errorf("postgres: unmarshal field changes: %w", decodeErr)
 	}
 	changes := make([]storage.FieldChange, len(items))
 	for i, item := range items {
@@ -103,6 +103,24 @@ func (s *Store) createChangeLog(ctx context.Context, slug string, entry *storage
 		return fmt.Errorf("postgres: create HAS_CHANGE edge: %w", err)
 	}
 
+	// Public keys match the existing FieldChange names. Only a real content delta
+	// advances its pointer; stage/metadata changes leave all content refs intact.
+	refs := map[string]string{}
+	for _, change := range changes {
+		if change.OldValue == change.NewValue {
+			continue
+		}
+		switch change.Field {
+		case "intent", "spark_output", "shape_output", "specify_output", "decompose_output":
+			refs[change.Field] = entry.ID
+		}
+	}
+	if len(refs) > 0 {
+		if _, err := s.exec(ctx, `UPDATE specs SET field_source_refs=field_source_refs || $3::jsonb WHERE project_slug=$1 AND slug=$2`, s.project, slug, refs); err != nil {
+			return fmt.Errorf("postgres: update spec field sources: %w", err)
+		}
+	}
+
 	storage.StashChangeEvent(ctx, &storage.ChangeEvent{
 		Slug:        slug,
 		Version:     entry.Version,
@@ -113,6 +131,45 @@ func (s *Store) createChangeLog(ctx context.Context, slug string, entry *storage
 		Reason:      entry.Reason,
 	})
 	return nil
+}
+
+// ReadSpecSourceRefs returns pointers to exact project-scoped changelog events.
+// Canonical fields: intent, spark_output, shape_output, specify_output, decompose_output.
+// An absent key means no recorded source; no version/hash/history backfill is inferred.
+func (s *Store) ReadSpecSourceRefs(ctx context.Context, slug string) (map[string]string, error) {
+	var refs map[string]string
+	err := s.queryRow(ctx, `SELECT field_source_refs FROM specs WHERE project_slug=$1 AND slug=$2`, s.project, slug).Scan(&refs)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, storage.ErrSpecNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: read spec field sources: %w", err)
+	}
+	return refs, nil
+}
+
+// A nil selection reads the project's decisions; a non-nil selection reads only those slugs.
+// No-op changelog entries never advance a field's source reference.
+func (s *Store) readDecisionSourceRefs(ctx context.Context, slugs []string) ([]storage.SummaryDecisionReference, error) {
+	rows, err := s.query(ctx, `SELECT d.id,d.slug,COALESCE((SELECT jsonb_object_agg(f.field,f.id) FROM (
+ SELECT DISTINCT ON (delta->>'field') delta->>'field' AS field,c.id FROM changelog_entries c CROSS JOIN LATERAL jsonb_array_elements(c.changes) delta
+ WHERE c.project_slug=d.project_slug AND c.spec_slug=d.slug AND delta->>'old_value' IS DISTINCT FROM delta->>'new_value'
+ ORDER BY delta->>'field',c.version DESC,c.id DESC) f),'{}'::jsonb) FROM decisions d WHERE d.project_slug=$1
+ AND ($2::text[] IS NULL OR d.slug=ANY($2)) ORDER BY d.slug COLLATE "C"`, s.project, slugs)
+	if err != nil {
+		return nil, err
+	}
+	refs, collectErr := pgx.CollectRows(rows, func(row pgx.CollectableRow) (storage.SummaryDecisionReference, error) {
+		var ref storage.SummaryDecisionReference
+		if scanErr := row.Scan(&ref.ID, &ref.Slug, &ref.SourceRefs); scanErr != nil {
+			return ref, fmt.Errorf("postgres: scan decision source references: %w", scanErr)
+		}
+		return ref, nil
+	})
+	if collectErr != nil {
+		return nil, fmt.Errorf("postgres: collect decision source references: %w", collectErr)
+	}
+	return refs, nil
 }
 
 // ListChanges returns changelog entries for a spec, ordered by version ascending.
@@ -180,8 +237,8 @@ func (s *Store) ListChanges(ctx context.Context, slug string, opts storage.Chang
 		}
 		entries = append(entries, entry)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: list changes: iterate: %w", err)
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("postgres: list changes: iterate: %w", rowsErr)
 	}
 	return entries, nil
 }
@@ -236,8 +293,8 @@ func (s *Store) ListAllChanges(ctx context.Context) ([]*storage.ChangeLogEntry, 
 			Date:        date,
 		})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: list all changes: iterate: %w", err)
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("postgres: list all changes: iterate: %w", rowsErr)
 	}
 	return entries, nil
 }

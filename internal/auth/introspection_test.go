@@ -85,6 +85,7 @@ func TestIntrospection_ActiveResourceBound_Resolves(t *testing.T) {
 	id, err := store.Resolve(context.Background(), "opaque-access-token")
 	require.NoError(t, err)
 	require.Equal(t, "u1", id.UserID)
+	require.Equal(t, storage.KindHuman, id.UserKind)
 	require.Equal(t, "oidc:sub-1", id.Subject)
 	require.Equal(t, int64(1), stub.calls.Load())
 }

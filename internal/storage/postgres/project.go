@@ -30,7 +30,7 @@ func (s *Store) EnsureProject(ctx context.Context, slug string) (*storage.Projec
 // GetProject implements storage.ProjectBackend.
 func (s *Store) GetProject(ctx context.Context, slug string) (*storage.Project, error) {
 	row := s.queryRow(ctx,
-		`SELECT slug, sync_adapters, github_repo, created_at, updated_at
+		`SELECT slug, sync_adapters, github_repo, managed, created_at, updated_at
 		 FROM projects WHERE slug = $1`,
 		slug,
 	)
@@ -51,7 +51,7 @@ func (s *Store) UpdateProject(ctx context.Context, slug string, adapters []strin
 		`UPDATE projects
 		 SET sync_adapters = $1, github_repo = $2, updated_at = $3
 		 WHERE slug = $4
-		 RETURNING slug, sync_adapters, github_repo, created_at, updated_at`,
+		 RETURNING slug, sync_adapters, github_repo, managed, created_at, updated_at`,
 		adapters, ghRepo, now, slug,
 	)
 	p, err := scanProject(row)
@@ -67,7 +67,7 @@ func (s *Store) UpdateProject(ctx context.Context, slug string, adapters []strin
 // ListProjects implements storage.ProjectBackend.
 func (s *Store) ListProjects(ctx context.Context) ([]*storage.Project, error) {
 	rows, err := s.query(ctx,
-		`SELECT slug, sync_adapters, github_repo, created_at, updated_at
+		`SELECT slug, sync_adapters, github_repo, managed, created_at, updated_at
 		 FROM projects ORDER BY slug`,
 	)
 	if err != nil {
@@ -81,10 +81,11 @@ func (s *Store) ListProjects(ctx context.Context) ([]*storage.Project, error) {
 			slug         string
 			syncAdapters []string
 			githubRepo   string
+			managed      bool
 			createdAt    time.Time
 			updatedAt    time.Time
 		)
-		if err := rows.Scan(&slug, &syncAdapters, &githubRepo, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&slug, &syncAdapters, &githubRepo, &managed, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("postgres: list projects: scan: %w", err)
 		}
 		if syncAdapters == nil {
@@ -94,6 +95,7 @@ func (s *Store) ListProjects(ctx context.Context) ([]*storage.Project, error) {
 			Slug:         slug,
 			SyncAdapters: syncAdapters,
 			GitHubRepo:   githubRepo,
+			Managed:      managed,
 			CreatedAt:    createdAt,
 			UpdatedAt:    updatedAt,
 		})
@@ -137,10 +139,11 @@ func scanProject(row pgx.Row) (*storage.Project, error) {
 		slug         string
 		syncAdapters []string
 		githubRepo   string
+		managed      bool
 		createdAt    time.Time
 		updatedAt    time.Time
 	)
-	if err := row.Scan(&slug, &syncAdapters, &githubRepo, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&slug, &syncAdapters, &githubRepo, &managed, &createdAt, &updatedAt); err != nil {
 		return nil, fmt.Errorf("postgres: scan project: %w", err)
 	}
 	if syncAdapters == nil {
@@ -150,6 +153,7 @@ func scanProject(row pgx.Row) (*storage.Project, error) {
 		Slug:         slug,
 		SyncAdapters: syncAdapters,
 		GitHubRepo:   githubRepo,
+		Managed:      managed,
 		CreatedAt:    createdAt,
 		UpdatedAt:    updatedAt,
 	}, nil

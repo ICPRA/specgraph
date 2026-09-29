@@ -40,7 +40,11 @@ func (h *SpecHandler) CreateSpec(ctx context.Context, req *connect.Request[specv
 	if scopeErr != nil {
 		return nil, scopeErr
 	}
-	msg := req.Msg
+	return createScopedSpec(ctx, store, req.Msg)
+}
+
+// createScopedSpec is shared by the RPC handler and explicit local commands.
+func createScopedSpec(ctx context.Context, store storage.ScopedBackend, msg *specv1.CreateSpecRequest) (*connect.Response[specv1.CreateSpecResponse], error) {
 	if err := validateSlug(msg.Slug); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}

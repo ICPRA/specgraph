@@ -244,7 +244,7 @@ func (h *oidcLoginHandler) handleCallback(w http.ResponseWriter, r *http.Request
 		}
 		q := url.Values{"cli_state": {flow.CLIState}, "code": {code}}
 		cb.RawQuery = q.Encode()
-		http.Redirect(w, r, cb.String(), http.StatusFound) //nolint:gosec // G710: target validated to literal loopback via validateCLICallback
+		http.Redirect(w, r, cb.String(), http.StatusFound) // Target validated to literal loopback via validateCLICallback.
 		return
 	}
 

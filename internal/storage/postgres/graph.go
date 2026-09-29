@@ -29,6 +29,9 @@ func (s *Store) AddEdge(ctx context.Context, fromSlug, toSlug string, edgeType s
 
 	var result *storage.Edge
 	err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
 		// Verify both nodes exist in the project.
 		fromExists, err := s.nodeExists(txCtx, fromSlug)
 		if err != nil {
@@ -52,7 +55,7 @@ func (s *Store) AddEdge(ctx context.Context, fromSlug, toSlug string, edgeType s
 			}
 		}
 
-		_, err = s.exec(txCtx,
+		tag, err := s.exec(txCtx,
 			`INSERT INTO edges (from_slug, to_slug, edge_type, project_slug, content_hash_at_link)
 			 VALUES ($1, $2, $3, $4, $5)
 			 ON CONFLICT (project_slug, from_slug, to_slug, edge_type) DO NOTHING`,
@@ -60,6 +63,11 @@ func (s *Store) AddEdge(ctx context.Context, fromSlug, toSlug string, edgeType s
 		)
 		if err != nil {
 			return fmt.Errorf("postgres: add edge: %w", err)
+		}
+		if tag.RowsAffected() > 0 {
+			if err := s.recordCompositionChange(txCtx, fromSlug, toSlug, edgeType, "INSERT", nil, nil); err != nil {
+				return err
+			}
 		}
 
 		result = &storage.Edge{
@@ -83,11 +91,32 @@ func (s *Store) RemoveEdge(ctx context.Context, fromSlug, toSlug string, edgeTyp
 		return fmt.Errorf("unsupported edge type: %q", edgeType)
 	}
 
-	_, err := s.exec(ctx,
-		`DELETE FROM edges
-		 WHERE from_slug = $1 AND to_slug = $2 AND edge_type = $3 AND project_slug = $4`,
-		fromSlug, toSlug, string(edgeType), s.project,
-	)
+	err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
+		var dispositions []string
+		var losses []summaryLoss
+		if edgeType == storage.EdgeTypeComposes {
+			var err error
+			dispositions, losses, err = s.summaryRemovalDispositions(txCtx, fromSlug, toSlug)
+			if err != nil {
+				return err
+			}
+		}
+		tag, err := s.exec(txCtx,
+			`DELETE FROM edges
+			 WHERE from_slug = $1 AND to_slug = $2 AND edge_type = $3 AND project_slug = $4`,
+			fromSlug, toSlug, string(edgeType), s.project,
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() > 0 {
+			return s.recordCompositionChange(txCtx, fromSlug, toSlug, edgeType, "DELETE", dispositions, losses)
+		}
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("postgres: remove edge: %w", err)
 	}
@@ -214,18 +243,23 @@ func (s *Store) GetDependenciesWithEdgeData(ctx context.Context, slug string) ([
 		if err := rows.Scan(&toSlug, &hashAtLink, &upstreamHash); err != nil {
 			return nil, fmt.Errorf("postgres: get dependencies with edge data: scan: %w", err)
 		}
-		nr, nrErr := s.resolveNodeRef(ctx, toSlug)
-		if nrErr != nil {
-			return nil, fmt.Errorf("postgres: get dependencies with edge data: resolve %q: %w", toSlug, nrErr)
-		}
 		refs = append(refs, storage.DependencyRef{
-			NodeRef:             nr,
+			NodeRef:             storage.NodeRef{Slug: toSlug},
 			ContentHashAtLink:   hashAtLink,
 			UpstreamContentHash: upstreamHash,
 		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("postgres: get dependencies with edge data: rows: %w", err)
+	}
+	// Release the result before resolving nodes on the same transaction connection.
+	rows.Close()
+	for i := range refs {
+		nr, err := s.resolveNodeRef(ctx, refs[i].Slug)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: get dependencies with edge data: resolve %q: %w", refs[i].Slug, err)
+		}
+		refs[i].NodeRef = nr
 	}
 	if refs == nil {
 		refs = []storage.DependencyRef{}
@@ -276,21 +310,21 @@ func (s *Store) refreshInboundDependencyHashes(ctx context.Context, slug string)
 }
 
 // GetTransitiveDeps returns all transitive dependencies of a node.
-// Uses a recursive CTE bounded to 50 hops with Postgres CYCLE detection.
+// Normalize both prerequisite representations; UNION visits each node once.
 func (s *Store) GetTransitiveDeps(ctx context.Context, slug string) ([]storage.NodeRef, error) {
 	rows, err := s.query(ctx,
-		`WITH RECURSIVE transitive AS (
-		     SELECT e.to_slug, 1 AS depth
-		     FROM edges e
-		     WHERE e.from_slug = $1 AND e.edge_type = 'DEPENDS_ON' AND e.project_slug = $2
-		     UNION ALL
-		     SELECT e.to_slug, t.depth + 1
+		`WITH RECURSIVE prerequisites AS (
+		     SELECT from_slug,to_slug FROM edges WHERE project_slug=$2 AND edge_type='DEPENDS_ON'
+		     UNION
+		     SELECT to_slug,from_slug FROM edges WHERE project_slug=$2 AND edge_type='BLOCKS'
+		 ), transitive AS (
+		     SELECT e.to_slug
+		     FROM prerequisites e WHERE e.from_slug = $1
+		     UNION
+		     SELECT e.to_slug
 		     FROM transitive t
-		     JOIN edges e ON e.from_slug = t.to_slug
-		                 AND e.edge_type = 'DEPENDS_ON' AND e.project_slug = $2
-		     WHERE t.depth < 50
-		 ) CYCLE to_slug SET is_cycle USING path
-		 SELECT DISTINCT to_slug FROM transitive WHERE NOT is_cycle`,
+		     JOIN prerequisites e ON e.from_slug = t.to_slug
+		 ) SELECT to_slug FROM transitive`,
 		slug, s.project,
 	)
 	if err != nil {
@@ -317,18 +351,18 @@ func (s *Store) GetTransitiveDeps(ctx context.Context, slug string) ([]storage.N
 // Mirror of GetTransitiveDeps, following edges backward.
 func (s *Store) GetImpact(ctx context.Context, slug string) ([]storage.NodeRef, error) {
 	rows, err := s.query(ctx,
-		`WITH RECURSIVE impact AS (
-		     SELECT e.from_slug AS slug, 1 AS depth
-		     FROM edges e
-		     WHERE e.to_slug = $1 AND e.edge_type = 'DEPENDS_ON' AND e.project_slug = $2
-		     UNION ALL
-		     SELECT e.from_slug, i.depth + 1
+		`WITH RECURSIVE prerequisites AS (
+		     SELECT from_slug,to_slug FROM edges WHERE project_slug=$2 AND edge_type='DEPENDS_ON'
+		     UNION
+		     SELECT to_slug,from_slug FROM edges WHERE project_slug=$2 AND edge_type='BLOCKS'
+		 ), impact AS (
+		     SELECT e.from_slug AS slug
+		     FROM prerequisites e WHERE e.to_slug = $1
+		     UNION
+		     SELECT e.from_slug
 		     FROM impact i
-		     JOIN edges e ON e.to_slug = i.slug
-		                 AND e.edge_type = 'DEPENDS_ON' AND e.project_slug = $2
-		     WHERE i.depth < 50
-		 ) CYCLE slug SET is_cycle USING path
-		 SELECT DISTINCT slug FROM impact WHERE NOT is_cycle`,
+		     JOIN prerequisites e ON e.to_slug = i.slug
+		 ) SELECT slug FROM impact`,
 		slug, s.project,
 	)
 	if err != nil {
@@ -359,11 +393,23 @@ func (s *Store) GetImpact(ctx context.Context, slug string) ([]storage.NodeRef, 
 // not part of the readiness model. This matches the Memgraph implementation which
 // matches only (dep:Spec) and (blocker:Spec) patterns.
 func (s *Store) GetReady(ctx context.Context) ([]storage.NodeRef, error) {
+	if _, ok := txFromContext(ctx); !ok {
+		var refs []storage.NodeRef
+		err := s.RunReadSnapshot(ctx, func(ctx context.Context) error { var err error; refs, err = s.GetReady(ctx); return err })
+		return refs, err
+	}
 	rows, err := s.query(ctx,
-		`SELECT s.slug, 'Spec' AS label, s.stage
+		`SELECT s.slug, 'Spec' AS label, s.stage, EXISTS(
+		     SELECT 1 FROM edges e JOIN specs p ON p.project_slug=e.project_slug
+		       AND p.slug=CASE WHEN e.edge_type='DEPENDS_ON' THEN e.to_slug ELSE e.from_slug END AND p.role='summary'
+		     WHERE e.project_slug=s.project_slug AND ((e.edge_type='DEPENDS_ON' AND e.from_slug=s.slug)
+		       OR (e.edge_type='BLOCKS' AND e.to_slug=s.slug)))
 		 FROM specs s
 		 WHERE s.project_slug = $1
 		   AND s.stage = 'approved'
+		   AND s.role = 'work'
+		   AND NOT EXISTS (SELECT 1 FROM run_dispatches d
+		       WHERE d.project_slug=s.project_slug AND d.task_slug=s.slug AND d.released_at IS NULL)
 		   AND s.provenance_type = 'authored'
 		   AND NOT EXISTS (
 		       -- Active claim by any agent
@@ -376,14 +422,14 @@ func (s *Store) GetReady(ctx context.Context) ([]storage.NodeRef, error) {
 		       SELECT 1 FROM edges e
 		       JOIN specs dep ON dep.slug = e.to_slug AND dep.project_slug = $1
 		       WHERE e.from_slug = s.slug AND e.edge_type = 'DEPENDS_ON' AND e.project_slug = $1
-		         AND dep.stage <> 'done'
+		         AND dep.stage <> 'done' AND dep.role <> 'summary'
 		   )
 		   AND NOT EXISTS (
 		       -- Only Spec blockers are checked by design; see function comment.
 		       SELECT 1 FROM edges e
 		       JOIN specs blocker ON blocker.slug = e.from_slug AND blocker.project_slug = $1
 		       WHERE e.to_slug = s.slug AND e.edge_type = 'BLOCKS' AND e.project_slug = $1
-		         AND blocker.stage <> 'done'
+		         AND blocker.stage <> 'done' AND blocker.role <> 'summary'
 		   )`,
 		s.project,
 	)
@@ -393,11 +439,14 @@ func (s *Store) GetReady(ctx context.Context) ([]storage.NodeRef, error) {
 	defer rows.Close()
 
 	var refs []storage.NodeRef
+	var needsSummary bool
 	for rows.Next() {
 		var slug, label, stage string
-		if err := rows.Scan(&slug, &label, &stage); err != nil {
+		var hasSummary bool
+		if err := rows.Scan(&slug, &label, &stage, &hasSummary); err != nil {
 			return nil, fmt.Errorf("postgres: get ready: scan: %w", err)
 		}
+		needsSummary = needsSummary || hasSummary
 		refs = append(refs, storage.NodeRef{
 			Slug:  slug,
 			Label: storage.NodeLabel(label),
@@ -409,6 +458,45 @@ func (s *Store) GetReady(ctx context.Context) ([]storage.NodeRef, error) {
 	}
 	if refs == nil {
 		refs = []storage.NodeRef{}
+	}
+	rows.Close()
+	eligible := refs[:0]
+	for _, ref := range refs {
+		_, reason, err := s.mergedSourceResponsibility(ctx, ref.Slug)
+		if err != nil {
+			return nil, err
+		}
+		if reason == "" {
+			eligible = append(eligible, ref)
+		}
+	}
+	refs = eligible
+	if needsSummary {
+		g, err := s.loadSummaryGraph(ctx)
+		if err != nil {
+			return nil, err
+		}
+		ready := refs[:0]
+		for _, ref := range refs {
+			blocked := false
+			for _, dependency := range g.dependencies[ref.Slug] {
+				if g.nodes[dependency].Role != storage.SpecRoleSummary {
+					continue
+				}
+				state, err := s.summaryState(ctx, g, dependency)
+				if err != nil {
+					return nil, err
+				}
+				if !state.Accepted {
+					blocked = true
+					break
+				}
+			}
+			if !blocked {
+				ready = append(ready, ref)
+			}
+		}
+		refs = ready
 	}
 	return refs, nil
 }

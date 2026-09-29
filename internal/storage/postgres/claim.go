@@ -29,17 +29,48 @@ func (s *Store) ClaimSpec(ctx context.Context, slug, agent string, leaseDuration
 	var claim *storage.Claim
 
 	err := s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
 		// Verify the spec exists in this project.
-		var exists int
+		var role string
+		var stage storage.SpecStage
 		err := s.queryRow(txCtx,
-			`SELECT 1 FROM specs WHERE slug = $1 AND project_slug = $2`,
+			`SELECT role,stage FROM specs WHERE slug = $1 AND project_slug = $2 FOR UPDATE`,
 			slug, s.project,
-		).Scan(&exists)
+		).Scan(&role, &stage)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("postgres: claim spec %q: %w", slug, storage.ErrSpecNotFound)
 		}
 		if err != nil {
 			return fmt.Errorf("postgres: claim spec existence check: %w", err)
+		}
+		if role == string(storage.SpecRoleSummary) {
+			return storage.ErrSummaryNotExecutable
+		}
+		if stage.IsFullyTerminal() {
+			return storage.ErrSpecTerminal
+		}
+		if err := s.nodeClaimAllowed(txCtx, slug, agent); err != nil {
+			return err
+		}
+		var resolved bool
+		if scanErr := s.queryRow(txCtx, `SELECT EXISTS(SELECT 1 FROM run_dispatches WHERE project_slug=$1 AND task_slug=$2 AND run_id=$3 AND released_at IS NOT NULL)`, s.project, slug, agent).Scan(&resolved); scanErr != nil {
+			return fmt.Errorf("postgres: ClaimSpec: %w", scanErr)
+		}
+		if resolved {
+			return storage.ErrDispatchResolved
+		}
+		if scanErr := s.queryRow(txCtx, `SELECT EXISTS(SELECT 1 FROM run_preparation_cancellations c JOIN run_bindings r ON r.id=c.run_id AND r.project_slug=c.project_slug WHERE c.project_slug=$1 AND r.task_spec_slug=$2 AND c.run_id=$3)`, s.project, slug, agent).Scan(&resolved); scanErr != nil {
+			return fmt.Errorf("postgres: ClaimSpec: %w", scanErr)
+		}
+		if resolved {
+			return storage.ErrDispatchResolved
+		}
+		if held, hasDispatchResponsibilityErr := s.hasDispatchResponsibility(txCtx, slug, agent); hasDispatchResponsibilityErr != nil {
+			return hasDispatchResponsibilityErr
+		} else if held {
+			return storage.ErrDispatchResponsibilityHeld
 		}
 
 		// Delete expired claims first.
@@ -141,6 +172,14 @@ func (s *Store) ClaimSpec(ctx context.Context, slug, agent string, leaseDuration
 // exists, or ErrNotClaimOwner if the claim belongs to a different agent.
 func (s *Store) UnclaimSpec(ctx context.Context, slug, agent string) error {
 	return s.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.lockDependencyState(txCtx); err != nil {
+			return err
+		}
+		if held, err := s.hasDispatchResponsibility(txCtx, slug, ""); err != nil {
+			return err
+		} else if held {
+			return storage.ErrDispatchResponsibilityHeld
+		}
 		var activeAgent string
 		err := s.queryRow(txCtx,
 			`SELECT agent FROM claims WHERE project_slug = $1 AND spec_slug = $2`,

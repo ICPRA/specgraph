@@ -41,6 +41,148 @@ var ErrSpecNotApproved = errors.New("spec is not in an approved or in_progress s
 // ErrAgentNotClaimOwner is returned when an agent reports an event but does not hold the claim.
 var ErrAgentNotClaimOwner = errors.New("agent does not hold the claim for this spec")
 
+// ErrManagedCompletionRequiresAcceptance is returned when RecordCompletion is
+// called in a managed project without an accepted delivery: completion claims
+// must be confirmed by real evidence and an acceptance verdict (plan v1 §7.2).
+var ErrManagedCompletionRequiresAcceptance = errors.New("managed project: completion requires an accepted delivery with evidence")
+
+// ErrCompletionRequiresRequirementReview preserves the old acceptance when the
+// primary requirement baseline is absent or differs from the current contract.
+var ErrCompletionRequiresRequirementReview = errors.New("completion requires requirement review: primary requirement baseline is missing or changed")
+
+// ErrDependenciesNotReady prevents preparation before direct prerequisites finish.
+var ErrDependenciesNotReady = errors.New("execution prerequisites are unfinished or unsupported")
+
+// ErrExecutionDependenciesChanged requires review of a changed relationship baseline.
+var ErrExecutionDependenciesChanged = errors.New("execution dependency baseline is missing or changed; review is required")
+
+// ErrDependencyInUse prevents deletion from silently satisfying a dependency.
+var ErrDependencyInUse = errors.New("node remains a prerequisite; explicitly resolve its dependency relationships before removal")
+
+// ErrDependencyCycle rejects a prerequisite edge that would introduce a graph cycle.
+var ErrDependencyCycle = errors.New("adding this prerequisite would create a dependency cycle")
+
+// ErrPlanningForbidden rejects planning outside the current project's verified host-bound manager run.
+var ErrPlanningForbidden = errors.New("planning requires the current host-bound manager run in this project")
+
+// ErrSummaryNotExecutable separates a summary container from implementation work.
+var ErrSummaryNotExecutable = errors.New("summary node is not an executable work item; use its child tasks and current-structure review")
+
+// ErrSubdivisionNotFound denotes an absent operation in the selected project.
+var ErrSubdivisionNotFound = errors.New("subdivision not found")
+
+// ErrInvalidSubdivisionRequest rejects malformed proposed children or a missing subdivision reason.
+var ErrInvalidSubdivisionRequest = errors.New("invalid subdivision request")
+
+// ErrRunContextNotFound denotes an absent prepared context in the selected project.
+var ErrRunContextNotFound = errors.New("recorded run context not found")
+
+// ErrInvalidRunPreparation rejects preparation input that does not satisfy its fixed task and target contract.
+var ErrInvalidRunPreparation = errors.New("invalid run preparation request")
+
+// ErrPreparationCancelled prevents reuse or admission of a cancelled preparation request.
+var ErrPreparationCancelled = errors.New("preparation request was cancelled")
+
+// ErrDispatchResponsibilityHeld prevents conflicting work while an admitted run's business responsibility remains held.
+var ErrDispatchResponsibilityHeld = errors.New("dispatch responsibility is unresolved")
+
+// ErrDispatchResolved rejects further dispatch operations after responsibility was released.
+var ErrDispatchResolved = errors.New("dispatch responsibility has already been released")
+
+// ErrAbandonExecutionPending requires explicit execution cleanup before abandoning a node.
+var ErrAbandonExecutionPending = errors.New("confirm dispatched runs stopped and release active claims before abandoning")
+
+// ErrReviewForbidden rejects an unverified review principal or missing explicit reviewer assignment.
+var ErrReviewForbidden = errors.New("verified review principal or explicit reviewer assignment required")
+
+// ErrReviewSelfReview rejects a reviewer sharing the writer's run or native environment/thread identity.
+var ErrReviewSelfReview = errors.New("reviewer must be a different run and native environment/thread from the writer")
+
+// ErrReviewHumanHold prevents agent review or completion while explicit human intervention is required.
+var ErrReviewHumanHold = errors.New("review requires human intervention; use source review to resolve the hold")
+
+// ErrReviewAlreadyDecided prevents another decision on an already decided assigned request.
+var ErrReviewAlreadyDecided = errors.New("this assigned review request already has a decision")
+
+// ErrReviewRequestNotFound denotes an absent assigned request in the selected project.
+var ErrReviewRequestNotFound = errors.New("review request not found")
+
+// ErrInvalidReview rejects malformed review input or sources that do not meet the assigned contract.
+var ErrInvalidReview = errors.New("invalid review request")
+
+// ErrInvalidNodeEvent rejects malformed operator events or references outside the specified node context.
+var ErrInvalidNodeEvent = errors.New("node event requires a valid event ID, reason and matching node/run/delivery references")
+
+// ErrInvalidDeliveryCursor rejects a browsing cursor outside the node's project-scoped delivery history.
+var ErrInvalidDeliveryCursor = errors.New("delivery cursor must reference a delivery of this node in this project")
+
+// ErrInvalidConversationRunCursor rejects a run outside the scoped conversation history.
+var ErrInvalidConversationRunCursor = errors.New("run cursor must reference a run of this conversation in this project")
+
+// ErrInvalidDeliverySubmission rejects a self-submission that mismatches its own run or native HEAD shape.
+var ErrInvalidDeliverySubmission = errors.New("delivery submission requires the expected own run, summary and native HEAD shape")
+
+// ErrNodeEventConflict rejects reuse of a recorded operator event ID rather than inferring another occurrence.
+var ErrNodeEventConflict = errors.New("node event ID already recorded; inspect event history before another submission")
+
+// ErrInvalidTestReport rejects malformed assertions or mismatched fixed delivery and test-plan references.
+var ErrInvalidTestReport = errors.New("invalid test report or fixed delivery/plan reference")
+
+// Report branch errors distinguish malformed input, fixed-definition conflicts and unmet admission facts.
+var (
+	ErrInvalidReportBranchFlow      = errors.New("invalid report branch flow")
+	ErrReportBranchFlowConflict     = errors.New("report branch flow conflicts with an existing occurrence or run")
+	ErrReportBranchFlowNotFound     = errors.New("report branch flow not found")
+	ErrReportBranchFlowNotSelected  = errors.New("report branch is cancelled, unknown or not selected")
+	ErrInvalidReportBranchJudgment  = errors.New("invalid report branch judgment request")
+	ErrReportBranchJudgmentConflict = errors.New("report branch judgment predecessor, source or actor conflict")
+	ErrReportBranchJudgmentNotFound = errors.New("report branch judgment condition not found")
+	ErrInvalidReportFlowJoin        = errors.New("invalid report flow join")
+	ErrReportFlowJoinConflict       = errors.New("report flow join conflicts with the original run or configuration")
+	ErrReportFlowJoinNotFound       = errors.New("report flow join not found")
+	ErrReportFlowJoinUnsatisfied    = errors.New("report flow join is cancelled or not satisfied")
+)
+
+// ErrTestReportForbidden rejects a reporter outside the authorized operator or bound implementation/test run.
+var ErrTestReportForbidden = errors.New("test reporting requires the authorized operator or bound implementation/test_execution run")
+
+// ErrImplementationTestsRequired prevents completion until each assigned plan has a latest passed report for the current commit.
+var ErrImplementationTestsRequired = errors.New("implementation completion requires passed latest reports for every assigned test plan on the current delivery commit")
+
+// Candidate-loop errors keep budget, stale-attempt and unavailable-result failures explicit.
+var (
+	ErrInvalidCandidateLoop          = errors.New("invalid candidate loop request")
+	ErrCandidateLoopConflict         = errors.New("candidate loop conflicts with a recorded run or attempt")
+	ErrCandidateLoopNotFound         = errors.New("candidate loop not found")
+	ErrCandidateLoopWaiting          = errors.New("candidate attempt is waiting for a formal delivery or reports")
+	ErrCandidateLoopStopped          = errors.New("candidate loop stopped or abandoned")
+	ErrCandidateBudgetHeld           = errors.New("unresolved candidate budget belongs to another run")
+	ErrCandidateConditionNotMet      = errors.New("candidate loop has not met its completion condition")
+	ErrCandidateAttemptsExhausted    = errors.New("candidate attempt budget is exhausted; human intervention required")
+	ErrCandidateLoopCompleted        = errors.New("candidate loop already completed its original task")
+	ErrInvalidCandidateSatisfaction  = errors.New("invalid candidate satisfaction request")
+	ErrCandidateSatisfactionConflict = errors.New("candidate satisfaction predecessor, attempt or actor conflict")
+	ErrCandidateInterventionHeld     = errors.New("candidate contradiction requires named human intervention")
+	ErrCandidateInterventionNotFound = errors.New("candidate intervention not found")
+	ErrInvalidNodeOwnership          = errors.New("invalid node ownership request")
+	ErrNodeOwnershipConflict         = errors.New("node ownership version, owner or receipt conflict")
+	ErrNodeOwnershipPending          = errors.New("node has a pending human takeover")
+	ErrNodeOwnershipHandoffRequired  = errors.New("node ownership handoff or stop evidence is incomplete")
+	ErrNodeOwnershipNotFound         = errors.New("node ownership operation not found")
+)
+
+// ErrRunBindingNotFound is returned when a run binding does not exist.
+var ErrRunBindingNotFound = errors.New("run binding not found")
+
+// ErrDeliveryNotFound is returned when a delivery is absent from the scoped project.
+var ErrDeliveryNotFound = errors.New("delivery not found")
+
+// ErrRunBindingConflict is returned when a run cannot accept the requested thread identity.
+var ErrRunBindingConflict = errors.New("run binding identity conflict")
+
+// ErrInvalidRunBinding is returned when an explicit run identity is invalid.
+var ErrInvalidRunBinding = errors.New("invalid run binding identity")
+
 // --- Lifecycle errors ---
 
 var (
