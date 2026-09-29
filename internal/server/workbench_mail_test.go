@@ -80,13 +80,9 @@ func (mailCheckForbid) Load(context.Context) ([]auth.PolicyDocument, error) {
 }
 
 func TestWorkbenchMailAPI(t *testing.T) {
-	const configPath = `C:\Users\zheng\project-workbench\specgraph-config.yaml`
-	const database = "specgraph_workbench_mail_api_check"
-	if os.Getenv("SPECGRAPH_MAIL_CHECK_CONFIG") == "" {
+	configPath := os.Getenv("SPECGRAPH_MAIL_CHECK_CONFIG")
+	if configPath == "" {
 		t.Skip("explicit isolated local PostgreSQL check only")
-	}
-	if os.Getenv("SPECGRAPH_MAIL_CHECK_CONFIG") != configPath {
-		t.Fatal("unexpected configuration path")
 	}
 	ctx := context.Background()
 	cfg, setupErr := config.LoadGlobalExplicit(configPath)
